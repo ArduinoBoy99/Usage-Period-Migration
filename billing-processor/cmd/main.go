@@ -3,14 +3,20 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
+	"time"
+
+	"usage-period-migration/billing-processor/service/billing"
 	"usage-period-migration/pkg/repository/kafka"
 	"usage-period-migration/pkg/repository/sql"
 )
+
+var logger *slog.Logger
 
 type Application struct {
 	Run             bool
@@ -20,15 +26,14 @@ type Application struct {
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
 
-	db              *sql.PostgresDB
-	kafkaConnector  *kafka.KafkaConnector
-	consumerService strings
+	db             *sql.PostgresDB
+	kafkaConnector *kafka.KafkaConnector
+	billingService billing.Service
 
 	wg sync.WaitGroup
 }
 
 func (app *Application) initDatabase() error {
-	// Get database configuration from environment variables
 	dbConfig := sql.Config{
 		Host:     getEnv("DB_HOST", "localhost"),
 		Port:     getEnvAsInt("DB_PORT", 5432),
@@ -38,7 +43,11 @@ func (app *Application) initDatabase() error {
 		SSLMode:  getEnv("DB_SSL_MODE", "disable"),
 	}
 
-	log.Printf("Connecting to database: %s@%s:%d/%s", dbConfig.User, dbConfig.Host, dbConfig.Port, dbConfig.DBName)
+	logger.Info("Connecting to database",
+		slog.String("user", dbConfig.User),
+		slog.String("host", dbConfig.Host),
+		slog.Int("port", dbConfig.Port),
+		slog.String("database", dbConfig.DBName))
 
 	db, err := sql.NewPostgresql(dbConfig)
 	if err != nil {
@@ -46,53 +55,120 @@ func (app *Application) initDatabase() error {
 	}
 
 	app.db = db
-	log.Println("Database connection established")
+	logger.Info("Database connection established")
+	return nil
+}
+
+func (app *Application) initKafka() error {
+	brokersStr := getEnv("KAFKA_BROKERS", "localhost:9092")
+	brokers := strings.Split(brokersStr, ",")
+
+	kafkaConfig := kafka.Config{
+		Brokers:           brokers,
+		Topic:             getEnv("KAFKA_TOPIC", "events"),
+		ConsumerGroup:     getEnv("KAFKA_CONSUMER_GROUP", "billing-processors"),
+		MaxAttempts:       getEnvAsInt("KAFKA_MAX_ATTEMPTS", 3),
+		MinBytes:          getEnvAsInt("KAFKA_MIN_BYTES", 1),
+		MaxBytes:          getEnvAsInt("KAFKA_MAX_BYTES", 10485760),
+		CommitInterval:    time.Duration(getEnvAsInt("KAFKA_COMMIT_INTERVAL_MS", 1000)) * time.Millisecond,
+		SessionTimeout:    time.Duration(getEnvAsInt("KAFKA_SESSION_TIMEOUT_MS", 10000)) * time.Millisecond,
+		HeartbeatInterval: time.Duration(getEnvAsInt("KAFKA_HEARTBEAT_INTERVAL_MS", 3000)) * time.Millisecond,
+	}
+
+	logger.Info("Connecting to Kafka brokers", slog.Any("brokers", brokers))
+	logger.Info("Kafka configuration",
+		slog.String("topic", kafkaConfig.Topic),
+		slog.String("consumer_group", kafkaConfig.ConsumerGroup))
+
+	connector, err := kafka.NewKafkaConnector(kafkaConfig)
+	if err != nil {
+		return fmt.Errorf("failed to initialize Kafka connector: %w", err)
+	}
+
+	app.kafkaConnector = connector
+	logger.Info("Kafka connector initialized")
 	return nil
 }
 
 func (app *Application) initServices() {
+	app.billingService = billing.NewService(app.db, app.kafkaConnector)
+	logger.Info("Billing service initialized")
+}
 
+func (app *Application) startBillingConsumer() {
+	app.wg.Add(1)
+	go func() {
+		defer app.wg.Done()
+		logger.Info("Starting billing consumer")
+
+		if err := app.billingService.StartConsumer(app.rootCtx); err != nil {
+			if err != context.Canceled {
+				logger.Error("Billing consumer stopped with error", slog.Any("error", err))
+			} else {
+				logger.Info("Billing consumer stopped gracefully")
+			}
+		}
+	}()
 }
 
 func (app *Application) start() error {
-	log.Println("Starting application...")
+	logger.Info("Starting application")
 
 	app.rootCtx, app.rootCancel = context.WithCancel(context.Background())
 
-	// Initialize database
 	if err := app.initDatabase(); err != nil {
 		return fmt.Errorf("database initialization failed: %w", err)
 	}
 
-	// Initialize services
+	if err := app.initKafka(); err != nil {
+		return fmt.Errorf("kafka initialization failed: %w", err)
+	}
+
 	app.initServices()
+	app.startBillingConsumer()
 
 	app.Run = true
+	logger.Info("Application started successfully")
+	logger.Info("Billing Processor Running",
+		slog.String("consumer_group", getEnv("KAFKA_CONSUMER_GROUP", "billing-processors")),
+		slog.String("topic", getEnv("KAFKA_TOPIC", "events")))
+	logger.Info("Processing billing chunks with 5-step flow")
+	logger.Info("  1. Read Kafka event")
+	logger.Info("  2. Idempotency check (dedupe by event_id)")
+	logger.Info("  3. Build Metronome payload")
+	logger.Info("  4. Send to Metronome")
+	logger.Info("  5. Publish BillingProcessed event")
+
 	return nil
 }
 
 func (app *Application) shutdown() {
-	log.Println("Shutting down application...")
+	logger.Info("Shutting down application")
 
-	// Cancel root context to stop all goroutines
 	if app.rootCancel != nil {
 		app.rootCancel()
 	}
 
-	// Wait for all goroutines to finish
-	log.Println("Waiting for goroutines to finish...")
+	logger.Info("Waiting for goroutines to finish")
 	app.wg.Wait()
 
-	// Close database connection
-	if app.db != nil {
-		if err := app.db.Close(); err != nil {
-			log.Printf("Error closing database connection: %v", err)
+	if app.kafkaConnector != nil {
+		if err := app.kafkaConnector.Close(); err != nil {
+			logger.Error("Error closing Kafka connector", slog.Any("error", err))
 		} else {
-			log.Println("Database connection closed")
+			logger.Info("Kafka connector closed")
 		}
 	}
 
-	log.Println("Application shutdown complete")
+	if app.db != nil {
+		if err := app.db.Close(); err != nil {
+			logger.Error("Error closing database connection", slog.Any("error", err))
+		} else {
+			logger.Info("Database connection closed")
+		}
+	}
+
+	logger.Info("Application shutdown complete")
 }
 
 func (app *Application) waitForShutdown() {
@@ -101,8 +177,10 @@ func (app *Application) waitForShutdown() {
 }
 
 func main() {
-	log.Println("=== Billing Processor Service ===")
-	log.Println("Starting application...")
+	logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
+	logger.Info("Billing Processor Service starting")
 
 	app := &Application{
 		Run:             false,
@@ -110,25 +188,22 @@ func main() {
 		cSignal:         make(chan os.Signal, 1),
 	}
 
-	// Setup signal handler for graceful shutdown
 	signal.Notify(app.cSignal, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		sig := <-app.cSignal
-		log.Printf("Received signal: %v", sig)
+		logger.Info("Received signal", slog.Any("signal", sig))
 		app.Run = false
 		app.shutdownChannel <- true
 	}()
 
-	// Start application
 	if err := app.start(); err != nil {
-		log.Fatalf("Failed to start application: %v", err)
+		logger.Error("Failed to start application", slog.Any("error", err))
+		os.Exit(1)
 	}
 
-	// Wait for shutdown signal
 	app.waitForShutdown()
 }
 
-// Helper functions for environment variables
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value

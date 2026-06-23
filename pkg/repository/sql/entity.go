@@ -76,11 +76,19 @@ type OutboxEvent struct {
 	LastError  *string `db:"last_error"`
 }
 
-type ProcessedEvent struct {
+type ProcessedBillingEvent struct {
 	ID            uuid.UUID `db:"id"`
 	EventID       string    `db:"event_id"`
 	SessionID     string    `db:"session_id"`
 	Sequence      int64     `db:"sequence"` // outbox sequence number
 	TransactionID string    `db:"transaction_id"`
 	ProcessedAt   time.Time `db:"processed_at"`
+}
+
+type ProcessedOutboxEvent struct {
+	ID          uuid.UUID `db:"id"`
+	EventID     string    `db:"event_id"`
+	SessionID   string    `db:"session_id"`
+	Sequence    int64     `db:"sequence"` // outbox sequence number
+	ProcessedAt time.Time `db:"processed_at"`
 }

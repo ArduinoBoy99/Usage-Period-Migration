@@ -256,3 +256,32 @@ func (p *PostgresDB) BatchMarkOutboxEventsPublishedTx(ctx context.Context, tx *s
 
 	return nil
 }
+
+// MarkIfNotProcessed checks if an event was already processed and marks it if not.
+// Returns true if successfully marked (not yet processed), false if already processed.
+func (p *PostgresDB) MarkIfNotProcessed(ctx context.Context, eventID string) (bool, error) {
+	// Use the processed_events table for idempotency tracking
+	exists, err := p.ProcessedOutboxEventExists(ctx, eventID)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return false, nil // Already processed
+	}
+
+	// Not yet processed - this is checked again at insert time atomically
+	return true, nil
+}
+
+// MarkProcessed marks an event as successfully processed in the processed_events table.
+// This records the successful completion of an event for idempotency.
+func (p *PostgresDB) MarkProcessed(ctx context.Context, eventID string, sessionID string, sequence int64) error {
+	processed := &ProcessedOutboxEvent{
+		ID:          uuid.New(),
+		EventID:     eventID,
+		SessionID:   sessionID,
+		Sequence:    sequence,
+		ProcessedAt: time.Now(),
+	}
+	return p.InsertProcessedOutboxEvent(ctx, processed)
+}

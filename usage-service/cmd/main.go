@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
@@ -13,6 +13,8 @@ import (
 	"usage-period-migration/usage-service/service/outbox"
 	"usage-period-migration/usage-service/service/sessions"
 )
+
+var logger *slog.Logger
 
 type Application struct {
 	Run             bool
@@ -30,7 +32,6 @@ type Application struct {
 }
 
 func (app *Application) initDatabase() error {
-	// Get database configuration from environment variables
 	dbConfig := sql.Config{
 		Host:     getEnv("DB_HOST", "localhost"),
 		Port:     getEnvAsInt("DB_PORT", 5432),
@@ -40,7 +41,11 @@ func (app *Application) initDatabase() error {
 		SSLMode:  getEnv("DB_SSL_MODE", "disable"),
 	}
 
-	log.Printf("Connecting to database: %s@%s:%d/%s", dbConfig.User, dbConfig.Host, dbConfig.Port, dbConfig.DBName)
+	logger.Info("Connecting to database",
+		slog.String("user", dbConfig.User),
+		slog.String("host", dbConfig.Host),
+		slog.Int("port", dbConfig.Port),
+		slog.String("database", dbConfig.DBName))
 
 	db, err := sql.NewPostgresql(dbConfig)
 	if err != nil {
@@ -48,36 +53,33 @@ func (app *Application) initDatabase() error {
 	}
 
 	app.db = db
-	log.Println("Database connection established")
+	logger.Info("Database connection established")
 	return nil
 }
 
 func (app *Application) initServices() {
-	// Create sessions service
 	app.sessionsService = sessions.NewService(app.db)
-	log.Println("Sessions service initialized")
+	logger.Info("Sessions service initialized")
 
-	// Create outbox service
 	app.outboxService = outbox.NewService(app.db)
-	log.Println("Outbox service initialized")
+	logger.Info("Outbox service initialized")
 }
 
 func (app *Application) startPeriodicSessionCreator() {
 	app.wg.Add(1)
 	go func() {
 		defer app.wg.Done()
-		log.Println("Starting periodic session creator (every 40 seconds)...")
+		logger.Info("Starting periodic session creator", slog.String("interval", "every 40 seconds"))
 
 		ticker := time.NewTicker(40 * time.Second)
 		defer ticker.Stop()
 
-		// Run immediately on start
 		app.bulkCreateSessions()
 
 		for {
 			select {
 			case <-app.rootCtx.Done():
-				log.Println("Stopping periodic session creator...")
+				logger.Info("Stopping periodic session creator")
 				return
 			case <-ticker.C:
 				app.bulkCreateSessions()
@@ -87,13 +89,14 @@ func (app *Application) startPeriodicSessionCreator() {
 }
 
 func (app *Application) bulkCreateSessions() {
-	log.Println("=== Bulk Creating Sessions ===")
+	logger.Info("Bulk Creating Sessions")
 
-	// Get configuration from environment or use defaults
 	count := getEnvAsInt("SESSION_CREATE_COUNT", 10)
 
 	if err := app.sessionsService.GenerateBulkActiveSessions(app.rootCtx, count); err != nil {
-		log.Printf("Error creating bulk sessions: %v", err)
+		logger.Error("Error creating bulk sessions",
+			slog.Int("count", count),
+			slog.Any("error", err))
 	}
 }
 
@@ -101,18 +104,17 @@ func (app *Application) startPeriodicSessionFinisher() {
 	app.wg.Add(1)
 	go func() {
 		defer app.wg.Done()
-		log.Println("Starting periodic session finisher (every 2 minutes)...")
+		logger.Info("Starting periodic session finisher", slog.String("interval", "every 2 minutes"))
 
 		ticker := time.NewTicker(2 * time.Minute)
 		defer ticker.Stop()
 
-		// Wait a bit before first run to allow some sessions to be created
 		time.Sleep(1 * time.Minute)
 
 		for {
 			select {
 			case <-app.rootCtx.Done():
-				log.Println("Stopping periodic session finisher...")
+				logger.Info("Stopping periodic session finisher")
 				return
 			case <-ticker.C:
 				app.finishActiveSessions()
@@ -122,89 +124,81 @@ func (app *Application) startPeriodicSessionFinisher() {
 }
 
 func (app *Application) finishActiveSessions() {
-	log.Println("=== Finishing Active Sessions ===")
+	logger.Info("Finishing Active Sessions")
 
-	// Get configuration from environment or use defaults
 	batchSize := getEnvAsInt("SESSION_FINISH_BATCH_SIZE", 50)
 
 	count, err := app.sessionsService.FinishActiveSessions(app.rootCtx, batchSize)
 	if err != nil {
-		log.Printf("Error finishing sessions: %v", err)
+		logger.Error("Error finishing sessions",
+			slog.Int("batch_size", batchSize),
+			slog.Any("error", err))
 		return
 	}
 
-	log.Printf("Successfully finished %d sessions", count)
+	logger.Info("Successfully finished sessions", slog.Int("count", count))
 }
 
 func (app *Application) startOutboxScanner() {
 	app.wg.Add(1)
 	go func() {
 		defer app.wg.Done()
-		log.Println("Starting outbox scanner (every 1 minute)...")
+		logger.Info("Starting outbox scanner", slog.String("interval", "every 1 minute"))
 
-		// The outbox service has its own periodic scanner
 		if err := app.outboxService.StartPeriodicScanner(app.rootCtx); err != nil {
 			if err != context.Canceled {
-				log.Printf("Outbox scanner stopped with error: %v", err)
+				logger.Error("Outbox scanner stopped with error", slog.Any("error", err))
 			} else {
-				log.Println("Outbox scanner stopped gracefully")
+				logger.Info("Outbox scanner stopped gracefully")
 			}
 		}
 	}()
 }
 
 func (app *Application) start() error {
-	log.Println("Starting application...")
+	logger.Info("Starting application")
 
 	app.rootCtx, app.rootCancel = context.WithCancel(context.Background())
 
-	// Initialize database
 	if err := app.initDatabase(); err != nil {
 		return fmt.Errorf("database initialization failed: %w", err)
 	}
 
-	// Initialize services
 	app.initServices()
 
-	// Start periodic tasks
 	app.startPeriodicSessionCreator()
 	app.startPeriodicSessionFinisher()
 	app.startOutboxScanner()
 
 	app.Run = true
-	log.Println("Application started successfully")
-	log.Println("")
-	log.Println("=== Usage Service Simulation Running ===")
-	log.Println("- Creating sessions every 40 seconds")
-	log.Println("- Finishing sessions every 2 minutes")
-	log.Println("- Scanning for outbox events every 1 minute")
-	log.Println("")
+	logger.Info("Application started successfully")
+	logger.Info("Usage Service Simulation Running",
+		slog.String("session_creation", "every 40 seconds"),
+		slog.String("session_finishing", "every 2 minutes"),
+		slog.String("outbox_scanning", "every 1 minute"))
 
 	return nil
 }
 
 func (app *Application) shutdown() {
-	log.Println("Shutting down application...")
+	logger.Info("Shutting down application")
 
-	// Cancel root context to stop all goroutines
 	if app.rootCancel != nil {
 		app.rootCancel()
 	}
 
-	// Wait for all goroutines to finish
-	log.Println("Waiting for goroutines to finish...")
+	logger.Info("Waiting for goroutines to finish")
 	app.wg.Wait()
 
-	// Close database connection
 	if app.db != nil {
 		if err := app.db.Close(); err != nil {
-			log.Printf("Error closing database connection: %v", err)
+			logger.Error("Error closing database connection", slog.Any("error", err))
 		} else {
-			log.Println("Database connection closed")
+			logger.Info("Database connection closed")
 		}
 	}
 
-	log.Println("Application shutdown complete")
+	logger.Info("Application shutdown complete")
 }
 
 func (app *Application) waitForShutdown() {
@@ -213,8 +207,10 @@ func (app *Application) waitForShutdown() {
 }
 
 func main() {
-	log.Println("=== Usage Service ===")
-	log.Println("Starting application...")
+	logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
+	logger.Info("Usage Service starting")
 
 	app := &Application{
 		Run:             false,
@@ -222,21 +218,19 @@ func main() {
 		cSignal:         make(chan os.Signal, 1),
 	}
 
-	// Setup signal handler for graceful shutdown
 	signal.Notify(app.cSignal, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		sig := <-app.cSignal
-		log.Printf("Received signal: %v", sig)
+		logger.Info("Received signal", slog.Any("signal", sig))
 		app.Run = false
 		app.shutdownChannel <- true
 	}()
 
-	// Start application
 	if err := app.start(); err != nil {
-		log.Fatalf("Failed to start application: %v", err)
+		logger.Error("Failed to start application", slog.Any("error", err))
+		os.Exit(1)
 	}
 
-	// Wait for shutdown signal
 	app.waitForShutdown()
 }
 

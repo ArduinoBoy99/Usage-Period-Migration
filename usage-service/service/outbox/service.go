@@ -2,19 +2,22 @@ package outbox
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
-	entity "usage-period-migration/pkg/entity"
+	"usage-period-migration/pkg/entity"
 	repo "usage-period-migration/pkg/repository/sql"
 
 	"github.com/google/uuid"
 )
 
+var logger *slog.Logger
+
 const (
-	EventTypeBillingChunk = "usage-billing-chunks"
+	EventTypeBillingChunk = "events"
 	ScanIntervalMinutes   = 1
 	BatchSize             = 1000
 )
@@ -31,12 +34,20 @@ type Service interface {
 	CreateOutboxEvent(ctx context.Context, session *repo.UsageSessions) error
 }
 
+// OutboxRepository defines the interface for outbox repository operations
+type OutboxRepository interface {
+	CountUnbilledUsageSessions(ctx context.Context) (int64, error)
+	GetUnbilledUsageSessionsAfterCursor(ctx context.Context, lastID string, limit int) ([]*repo.UsageSessions, error)
+	InsertOutboxEventTx(ctx context.Context, tx *sql.Tx, event *repo.OutboxEvent) error
+	BeginTx(ctx context.Context) (*sql.Tx, error)
+}
+
 type outboxService struct {
-	db *repo.PostgresDB
+	db OutboxRepository
 }
 
 // NewService creates a new Outbox service
-func NewService(db *repo.PostgresDB) Service {
+func NewService(db OutboxRepository) Service {
 	return &outboxService{
 		db: db,
 	}
@@ -44,26 +55,25 @@ func NewService(db *repo.PostgresDB) Service {
 
 // StartPeriodicScanner starts the periodic scanner that runs every minute
 func (s *outboxService) StartPeriodicScanner(ctx context.Context) error {
-	log.Println("Starting periodic outbox scanner...")
+	logger.Info("Starting periodic outbox scanner")
 
 	ticker := time.NewTicker(ScanIntervalMinutes * time.Minute)
 	defer ticker.Stop()
 
 	// Run immediately on start
 	if err := s.ScanAndCreateOutboxEvents(ctx); err != nil {
-		log.Printf("Error in initial scan: %v", err)
+		logger.Error("Error in initial scan", slog.Any("error", err))
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Stopping periodic outbox scanner...")
+			logger.Info("Stopping periodic outbox scanner")
 			return ctx.Err()
 		case <-ticker.C:
-			log.Println("Running periodic scan for unbilled sessions...")
+			logger.Info("Running periodic scan for unbilled sessions")
 			if err := s.ScanAndCreateOutboxEvents(ctx); err != nil {
-				log.Printf("Error scanning unbilled sessions: %v", err)
-				// Continue running despite errors
+				logger.Error("Error scanning unbilled sessions", slog.Any("error", err))
 			}
 		}
 	}
@@ -79,11 +89,11 @@ func (s *outboxService) ScanAndCreateOutboxEvents(ctx context.Context) error {
 	}
 
 	if totalCount == 0 {
-		log.Println("No unbilled sessions found")
+		logger.Info("No unbilled sessions found")
 		return nil
 	}
 
-	log.Printf("Found %d unbilled sessions to process", totalCount)
+	logger.Info("Found unbilled sessions to process", slog.Int64("count", totalCount))
 
 	var totalProcessed int
 	lastID := ""
@@ -101,7 +111,9 @@ func (s *outboxService) ScanAndCreateOutboxEvents(ctx context.Context) error {
 		// Process each session and create outbox events
 		for _, session := range sessions {
 			if err := s.CreateOutboxEvent(ctx, session); err != nil {
-				log.Printf("Error creating billing chunk event for session %s: %v", session.ID, err)
+				logger.Error("Error creating billing chunk event for session",
+					slog.String("session_id", session.ID),
+					slog.Any("error", err))
 				// Continue processing other sessions
 				continue
 			}
@@ -109,11 +121,15 @@ func (s *outboxService) ScanAndCreateOutboxEvents(ctx context.Context) error {
 			totalProcessed++
 		}
 
-		log.Printf("Processed %d/%d sessions", totalProcessed, totalCount)
+		logger.Info("Processing progress",
+			slog.Int("processed", totalProcessed),
+			slog.Int64("total", totalCount))
 	}
 
 	duration := time.Since(startTime)
-	log.Printf("Completed processing %d sessions in %v", totalProcessed, duration)
+	logger.Info("Completed processing sessions",
+		slog.Int("count", totalProcessed),
+		slog.Duration("duration", duration))
 
 	return nil
 }
@@ -200,8 +216,10 @@ func (s *outboxService) CreateOutboxEvent(ctx context.Context, session *repo.Usa
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	log.Printf("Created billing chunk event for session %s (sequence: %d, period: %s to %s)",
-		session.ID, newSequence, from.Format(time.RFC3339), to.Format(time.RFC3339))
+	logger.Info("Created billing chunk event for session",
+		slog.String("session_id", session.ID),
+		slog.Int64("sequence", newSequence),
+		slog.String("period", fmt.Sprintf("%s to %s", from.Format(time.RFC3339), to.Format(time.RFC3339))))
 
 	return nil
 }

@@ -2,18 +2,20 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
-	"usage-period-migration/outbox-publisher/service/usage-billing-chunks"
+	"usage-period-migration/outbox-publisher/service/events"
 	"usage-period-migration/pkg/repository/kafka"
 	"usage-period-migration/pkg/repository/sql"
 )
+
+var logger *slog.Logger
 
 type Application struct {
 	Run             bool
@@ -25,11 +27,10 @@ type Application struct {
 
 	db               *sql.PostgresDB
 	kafkaConnector   *kafka.KafkaConnector
-	publisherService usage_billing_chunks.OutboxPublisherService
+	publisherService events.OutboxPublisherService
 }
 
 func (app *Application) initDatabase() error {
-	// Get database configuration from environment variables
 	dbConfig := sql.Config{
 		Host:     getEnv("DB_HOST", "localhost"),
 		Port:     getEnvAsInt("DB_PORT", 5432),
@@ -39,7 +40,11 @@ func (app *Application) initDatabase() error {
 		SSLMode:  getEnv("DB_SSL_MODE", "disable"),
 	}
 
-	log.Printf("Connecting to database: %s@%s:%d/%s", dbConfig.User, dbConfig.Host, dbConfig.Port, dbConfig.DBName)
+	logger.Info("Connecting to database",
+		slog.String("user", dbConfig.User),
+		slog.String("host", dbConfig.Host),
+		slog.Int("port", dbConfig.Port),
+		slog.String("database", dbConfig.DBName))
 
 	db, err := sql.NewPostgresql(dbConfig)
 	if err != nil {
@@ -47,12 +52,11 @@ func (app *Application) initDatabase() error {
 	}
 
 	app.db = db
-	log.Println("Database connection established")
+	logger.Info("Database connection established")
 	return nil
 }
 
 func (app *Application) initKafka() error {
-	// Get Kafka configuration from environment variables
 	brokers := getEnvAsSlice("KAFKA_BROKERS", []string{"localhost:9092"})
 
 	kafkaConfig := kafka.Config{
@@ -62,7 +66,7 @@ func (app *Application) initKafka() error {
 		MaxAttempts:   getEnvAsInt("KAFKA_MAX_ATTEMPTS", 3),
 	}
 
-	log.Printf("Connecting to Kafka brokers: %v", brokers)
+	logger.Info("Connecting to Kafka brokers", slog.Any("brokers", brokers))
 
 	kafkaConnector, err := kafka.NewKafkaConnector(kafkaConfig)
 	if err != nil {
@@ -70,80 +74,74 @@ func (app *Application) initKafka() error {
 	}
 
 	app.kafkaConnector = kafkaConnector
-	log.Println("Kafka connection established")
+	logger.Info("Kafka connection established")
 	return nil
 }
 
 func (app *Application) initServices() {
-	// Create outbox publisher service
-	app.publisherService = usage_billing_chunks.NewOutboxPublisherService(app.db, app.kafkaConnector)
-	log.Println("Outbox publisher service initialized")
+	app.publisherService = events.NewOutboxPublisherService(app.db, app.kafkaConnector)
+	logger.Info("Outbox publisher service initialized")
+}
+
+func (app *Application) startLeasingWorkers() {
+	pollInterval := time.Duration(getEnvAsInt("POLL_INTERVAL_MS", 500)) * time.Millisecond
+	batchSize := getEnvAsInt("BATCH_SIZE", 500)
+	numWorkers := getEnvAsInt("NUM_WORKERS", runtime.NumCPU()*2)
+
+	logger.Info("Starting leasing workers",
+		slog.Int("num_workers", numWorkers),
+		slog.Int("batch_size", batchSize),
+		slog.Duration("poll_interval", pollInterval))
+	app.publisherService.StartWorkers(app.rootCtx, numWorkers, pollInterval, batchSize)
 }
 
 func (app *Application) start() error {
-	log.Println("Starting application...")
+	logger.Info("Starting application")
 
 	app.rootCtx, app.rootCancel = context.WithCancel(context.Background())
 
-	// Initialize database
 	if err := app.initDatabase(); err != nil {
-		return fmt.Errorf("database initialization failed: %w", err)
+		return fmt.Errorf("database init failed: %w", err)
 	}
-
-	// Initialize Kafka
 	if err := app.initKafka(); err != nil {
-		return fmt.Errorf("kafka initialization failed: %w", err)
+		return fmt.Errorf("kafka init failed: %w", err)
 	}
 
-	// Initialize services
 	app.initServices()
-
-	// Start polling for unpublished events
-	pollingInterval := time.Duration(getEnvAsInt("POLLING_INTERVAL_SECONDS", 5)) * time.Second
-	batchSize := getEnvAsInt("BATCH_SIZE", 1000)
-	numWorkers := getEnvAsInt("NUM_WORKERS", 16)
-
-	go func() {
-		if err := app.publisherService.StartPolling(app.rootCtx, pollingInterval, batchSize, numWorkers); err != nil {
-			if !errors.Is(err, context.Canceled) {
-				log.Printf("Polling stopped with error: %v", err)
-			}
-		}
-	}()
+	app.startLeasingWorkers()
 
 	app.Run = true
-	log.Println("Application started successfully")
-
+	logger.Info("Outbox Publisher Running",
+		slog.String("model", "FOR UPDATE SKIP LOCKED"),
+		slog.String("concurrency", "Horizontal via worker replicas"),
+		slog.String("idempotency", "processed_outbox_events table"))
 	return nil
 }
 
 func (app *Application) shutdown() {
-	log.Println("Shutting down application...")
+	logger.Info("Shutting down application")
 
-	// Cancel root context
 	if app.rootCancel != nil {
 		app.rootCancel()
 	}
 
-	// Close Kafka connection
 	if app.kafkaConnector != nil {
 		if err := app.kafkaConnector.Close(); err != nil {
-			log.Printf("Error closing Kafka connection: %v", err)
+			logger.Error("Error closing Kafka connection", slog.Any("error", err))
 		} else {
-			log.Println("Kafka connection closed")
+			logger.Info("Kafka connection closed")
 		}
 	}
 
-	// Close database connection
 	if app.db != nil {
 		if err := app.db.Close(); err != nil {
-			log.Printf("Error closing database connection: %v", err)
+			logger.Error("Error closing database connection", slog.Any("error", err))
 		} else {
-			log.Println("Database connection closed")
+			logger.Info("Database connection closed")
 		}
 	}
 
-	log.Println("Application shutdown complete")
+	logger.Info("Application shutdown complete")
 }
 
 func (app *Application) waitForShutdown() {
@@ -152,8 +150,10 @@ func (app *Application) waitForShutdown() {
 }
 
 func main() {
-	log.Println("=== Outbox Publisher Service ===")
-	log.Println("Starting application...")
+	logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
+	logger.Info("Outbox Publisher Service starting")
 
 	app := &Application{
 		Run:             false,
@@ -161,21 +161,19 @@ func main() {
 		cSignal:         make(chan os.Signal, 1),
 	}
 
-	// Setup signal handler for graceful shutdown
 	signal.Notify(app.cSignal, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		sig := <-app.cSignal
-		log.Printf("Received signal: %v", sig)
+		logger.Info("Received signal", slog.Any("signal", sig))
 		app.Run = false
 		app.shutdownChannel <- true
 	}()
 
-	// Start application
 	if err := app.start(); err != nil {
-		log.Fatalf("Failed to start application: %v", err)
+		logger.Error("Failed to start application", slog.Any("error", err))
+		os.Exit(1)
 	}
 
-	// Wait for shutdown signal
 	app.waitForShutdown()
 }
 
@@ -204,7 +202,6 @@ func getEnvAsSlice(key string, defaultValue []string) []string {
 	if valueStr == "" {
 		return defaultValue
 	}
-	// Simple split by comma - can be enhanced for more complex parsing
 	var result []string
 	var current string
 	for _, char := range valueStr {

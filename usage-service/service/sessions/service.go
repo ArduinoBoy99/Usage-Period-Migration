@@ -2,6 +2,7 @@ package sessions
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -51,12 +52,24 @@ type RealisticSessionConfig struct {
 	ActiveRatio      float64 // Ratio of active vs finished sessions (0.0-1.0)
 }
 
+// SessionRepository defines the interface for session repository operations
+type SessionRepository interface {
+	InsertUsageSession(ctx context.Context, session *repo.UsageSessions) error
+	GetUsageSessionByID(ctx context.Context, sessionID string) (*repo.UsageSessions, error)
+	BeginTx(ctx context.Context) (*sql.Tx, error)
+	UpdateUsageSessionComplete(ctx context.Context, tx *sql.Tx, sessionID string, finishedAt time.Time, newSequence int64, lastBilledAt time.Time) error
+	InsertOutboxEventTx(ctx context.Context, tx *sql.Tx, event *repo.OutboxEvent) error
+	CountActiveSessions(ctx context.Context) (int64, error)
+	GetActiveSessionIDs(ctx context.Context, batchSize int) ([]string, error)
+}
+
+// Change the service struct:
 type sessionService struct {
-	db *repo.PostgresDB
+	db SessionRepository // Change from *repo.PostgresDB
 }
 
 // NewService creates a new Sessions service
-func NewService(db *repo.PostgresDB) Service {
+func NewService(db SessionRepository) Service {
 	return &sessionService{
 		db: db,
 	}
@@ -202,7 +215,7 @@ func (s *sessionService) FinishSession(ctx context.Context, sessionID string) er
 	outboxEvent := &repo.OutboxEvent{
 		ID:          uuid.New(),
 		EventID:     eventID,
-		EventType:   "usage-billing-chunks",
+		EventType:   "events",
 		SessionID:   session.ID,
 		Sequence:    newSequence,
 		Payload:     payloadBytes, // ADD THIS

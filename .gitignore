@@ -26,6 +26,10 @@ go.work.sum
 
 # env file
 .env
+analytics-exporter/cmd/cmd
+billing-processor/cmd/cmd
+outbox-publisher/cmd/cmd
+usage-service/cmd/cmd
 
 # Editor/IDE
 # .idea/
