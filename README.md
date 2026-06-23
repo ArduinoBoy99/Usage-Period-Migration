@@ -12,6 +12,9 @@ The system consists of 4 Go services:
 - #### Analytics Exporter 
   - consumes processed billing events and exports them to analytics platforms (with Clickhouse simulation in this implementation)
 
+![Billing System Design](https://github.com/ArduinoBoy99/Usage-Period-Migration/blob/main/Billing-SystemDesign1.png)
+
+
 The architecture emphasizes reliability and eventual consistency through the outbox pattern, all critical state changes are first written to a local outbox table within a transaction, then published asynchronously to Kafka. This guarantees no events are lost even if services crash. Idempotency tracking ensures duplicate events are safely handled. The system uses structured JSON logging throughout for production observability.
 
 All services are containerized with Docker and orchestrated via docker-compose for local development. The infrastructure includes PostgreSQL 18.4 with auto-incrementing IDs, Kafka 3.8 with Zookeeper for reliable message queuing, and comprehensive CI/CD via CircleCI with parallel build and test jobs. Database initialization is handled through schema migration functions that create tables with appropriate indexes on critical query paths.
