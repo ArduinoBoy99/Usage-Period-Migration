@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // ============================================================================
@@ -16,7 +14,7 @@ import (
 // GetProcessedBillingEventByEventID retrieves a processed event by event_id
 func (p *PostgresDB) GetProcessedBillingEventByEventID(ctx context.Context, eventID string) (*ProcessedBillingEvent, error) {
 	query := `
-		SELECT id, event_id, session_id, sequence, processed_at
+		SELECT id, event_id, session_id, sequence, transaction_id, processed_at
 		FROM processed_billing_events
 		WHERE event_id = $1
 	`
@@ -42,7 +40,7 @@ func (p *PostgresDB) GetProcessedBillingEventByEventID(ctx context.Context, even
 }
 
 // GetProcessedBillingEventByID retrieves a processed event by ID
-func (p *PostgresDB) GetProcessedBillingEventByID(ctx context.Context, id uuid.UUID) (*ProcessedBillingEvent, error) {
+func (p *PostgresDB) GetProcessedBillingEventByID(ctx context.Context, id int64) (*ProcessedBillingEvent, error) {
 	query := `
 		SELECT id, event_id, session_id, sequence, transaction_id, processed_at
 		FROM processed_billing_events
@@ -73,12 +71,11 @@ func (p *PostgresDB) GetProcessedBillingEventByID(ctx context.Context, id uuid.U
 func (p *PostgresDB) InsertProcessedBillingEvent(ctx context.Context, event *ProcessedBillingEvent) error {
 	query := `
 		INSERT INTO processed_billing_events (
-			id, event_id, session_id, sequence, transaction_id, processed_at
-		) VALUES ($1, $2, $3, $4, $5, $6)
+			event_id, session_id, sequence, transaction_id, processed_at
+		) VALUES ($1, $2, $3, $4, $5)
 	`
 
 	_, err := p.db.ExecContext(ctx, query,
-		event.ID,
 		event.EventID,
 		event.SessionID,
 		event.Sequence,
@@ -97,12 +94,11 @@ func (p *PostgresDB) InsertProcessedBillingEvent(ctx context.Context, event *Pro
 func (p *PostgresDB) InsertProcessedBillingEventTx(ctx context.Context, tx *sql.Tx, event *ProcessedBillingEvent) error {
 	query := `
 		INSERT INTO processed_billing_events (
-			id, event_id, session_id, sequence, transaction_id, processed_at
-		) VALUES ($1, $2, $3, $4, $5, $6)
+			event_id, session_id, sequence, transaction_id, processed_at
+		) VALUES ($1, $2, $3, $4, $5)
 	`
 
 	_, err := tx.ExecContext(ctx, query,
-		event.ID,
 		event.EventID,
 		event.SessionID,
 		event.Sequence,
@@ -152,7 +148,7 @@ func (p *PostgresDB) ProcessedBillingEventExistsTx(ctx context.Context, tx *sql.
 }
 
 // DeleteProcessedBillingEvent deletes a processed event by ID
-func (p *PostgresDB) DeleteProcessedBillingEvent(ctx context.Context, id uuid.UUID) error {
+func (p *PostgresDB) DeleteProcessedBillingEvent(ctx context.Context, id int64) error {
 	query := `
 		DELETE FROM processed_billing_events
 		WHERE id = $1

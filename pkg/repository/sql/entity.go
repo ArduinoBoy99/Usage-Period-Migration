@@ -3,8 +3,6 @@ package sql
 import (
 	"encoding/json"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type SandboxClass string
@@ -60,9 +58,9 @@ type UsageSessions struct {
 }
 
 type OutboxEvent struct {
-	ID        uuid.UUID `db:"id"`
-	EventID   string    `db:"event_id"` // unique — BillingChunkCreated.EventID
-	EventType string    `db:"event_type"`
+	ID        int64  `db:"id"`
+	EventID   string `db:"event_id"` // unique — BillingChunkCreated.EventID
+	EventType string `db:"event_type"`
 
 	SessionID string `db:"session_id"`
 	Sequence  int64  `db:"sequence"` // outbox sequence number
@@ -77,7 +75,7 @@ type OutboxEvent struct {
 }
 
 type ProcessedBillingEvent struct {
-	ID            uuid.UUID `db:"id"`
+	ID            int64     `db:"id"`
 	EventID       string    `db:"event_id"`
 	SessionID     string    `db:"session_id"`
 	Sequence      int64     `db:"sequence"` // outbox sequence number
@@ -86,7 +84,7 @@ type ProcessedBillingEvent struct {
 }
 
 type ProcessedOutboxEvent struct {
-	ID          uuid.UUID `db:"id"`
+	ID          int64     `db:"id"`
 	EventID     string    `db:"event_id"`
 	SessionID   string    `db:"session_id"`
 	Sequence    int64     `db:"sequence"` // outbox sequence number

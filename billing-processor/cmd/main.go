@@ -56,6 +56,12 @@ func (app *Application) initDatabase() error {
 
 	app.db = db
 	logger.Info("Database connection established")
+
+	if err := app.db.InitializeSchema(context.Background()); err != nil {
+		logger.Error("Failed to initialize database schema", slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	return nil
 }
 

@@ -7,7 +7,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 
 	kafkaRepo "usage-period-migration/pkg/repository/kafka"
@@ -206,7 +205,6 @@ func (s *billingService) ProcessBillingChunk(ctx context.Context, event *kafkaRe
 
 	// Record as processed in database
 	processedEvent := &sql.ProcessedBillingEvent{
-		ID:          uuid.New(),
 		EventID:     event.EventID,
 		ProcessedAt: time.Now(),
 	}

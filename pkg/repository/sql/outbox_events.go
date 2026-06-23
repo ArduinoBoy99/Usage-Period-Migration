@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // ============================================================================
@@ -15,7 +13,7 @@ import (
 // ============================================================================
 
 // GetOutboxEvent retrieves an outbox event by ID
-func (p *PostgresDB) GetOutboxEvent(ctx context.Context, id uuid.UUID) (*OutboxEvent, error) {
+func (p *PostgresDB) GetOutboxEvent(ctx context.Context, id int64) (*OutboxEvent, error) {
 	query := `
 		SELECT id, event_id, event_type, session_id, sequence, payload,
 		       created_at, published_at, retry_count, last_error
@@ -38,7 +36,7 @@ func (p *PostgresDB) GetOutboxEvent(ctx context.Context, id uuid.UUID) (*OutboxE
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("outbox event not found: %s", id)
+		return nil, fmt.Errorf("outbox event not found: %d", id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get outbox event: %w", err)
@@ -107,13 +105,12 @@ func (p *PostgresDB) GetUnpublishedOutboxEvents(ctx context.Context, eventType s
 func (p *PostgresDB) InsertOutboxEvent(ctx context.Context, event *OutboxEvent) error {
 	query := `
 		INSERT INTO outbox_events (
-			id, event_id, event_type, session_id, sequence, payload,
+			event_id, event_type, session_id, sequence, payload,
 			created_at, published_at, retry_count, last_error
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 
 	_, err := p.db.ExecContext(ctx, query,
-		event.ID,
 		event.EventID,
 		event.EventType,
 		event.SessionID,
@@ -136,13 +133,12 @@ func (p *PostgresDB) InsertOutboxEvent(ctx context.Context, event *OutboxEvent) 
 func (p *PostgresDB) InsertOutboxEventTx(ctx context.Context, tx *sql.Tx, event *OutboxEvent) error {
 	query := `
 		INSERT INTO outbox_events (
-			id, event_id, event_type, session_id, sequence, payload,
+			 event_id, event_type, session_id, sequence, payload,
 			created_at, published_at, retry_count, last_error
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 
 	_, err := tx.ExecContext(ctx, query,
-		event.ID,
 		event.EventID,
 		event.EventType,
 		event.SessionID,
@@ -185,14 +181,14 @@ func (p *PostgresDB) UpdateOutboxEvent(ctx context.Context, event *OutboxEvent) 
 	}
 
 	if rowsAffected == 0 {
-		return fmt.Errorf("outbox event not found: %s", event.ID)
+		return fmt.Errorf("outbox event not found: %d", event.ID)
 	}
 
 	return nil
 }
 
 // MarkOutboxEventPublished marks an outbox event as published
-func (p *PostgresDB) MarkOutboxEventPublished(ctx context.Context, id uuid.UUID) error {
+func (p *PostgresDB) MarkOutboxEventPublished(ctx context.Context, id int64) error {
 	query := `
 		UPDATE outbox_events
 		SET published_at = $2
@@ -211,14 +207,14 @@ func (p *PostgresDB) MarkOutboxEventPublished(ctx context.Context, id uuid.UUID)
 	}
 
 	if rowsAffected == 0 {
-		return fmt.Errorf("outbox event not found: %s", id)
+		return fmt.Errorf("outbox event not found: %d", id)
 	}
 
 	return nil
 }
 
 // BatchMarkOutboxEventsPublishedTx marks multiple outbox events as published in a single query within a transaction
-func (p *PostgresDB) BatchMarkOutboxEventsPublishedTx(ctx context.Context, tx *sql.Tx, ids []uuid.UUID) error {
+func (p *PostgresDB) BatchMarkOutboxEventsPublishedTx(ctx context.Context, tx *sql.Tx, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -277,7 +273,6 @@ func (p *PostgresDB) MarkIfNotProcessed(ctx context.Context, eventID string) (bo
 // This records the successful completion of an event for idempotency.
 func (p *PostgresDB) MarkProcessed(ctx context.Context, eventID string, sessionID string, sequence int64) error {
 	processed := &ProcessedOutboxEvent{
-		ID:          uuid.New(),
 		EventID:     eventID,
 		SessionID:   sessionID,
 		Sequence:    sequence,

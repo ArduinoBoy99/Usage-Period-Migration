@@ -66,3 +66,75 @@ func (p *PostgresDB) DB() *sql.DB {
 func (p *PostgresDB) BeginTx(ctx context.Context) (*sql.Tx, error) {
 	return p.db.BeginTx(ctx, nil)
 }
+
+// InitializeSchema creates all required tables with indexes if they don't exist
+func (p *PostgresDB) InitializeSchema(ctx context.Context) error {
+	schema := `
+	CREATE TABLE IF NOT EXISTS usage_sessions (
+		id VARCHAR(255) PRIMARY KEY,
+		sandboxId VARCHAR(255) NOT NULL,
+		organizationId VARCHAR(255) NOT NULL,
+		startAt TIMESTAMP NOT NULL,
+		endAt TIMESTAMP,
+		status VARCHAR(50) NOT NULL,
+		lastBilledAt TIMESTAMP,
+		billingStatus VARCHAR(50) NOT NULL,
+		billingSequence BIGINT NOT NULL DEFAULT 0,
+		cpu FLOAT8,
+		gpu FLOAT8,
+		ramGB FLOAT8,
+		diskGB FLOAT8,
+		region VARCHAR(100) NOT NULL,
+		sandboxClass VARCHAR(50) NOT NULL DEFAULT 'container',
+		recordedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_usage_sessions_last_billed_at ON usage_sessions(lastBilledAt);
+	CREATE INDEX IF NOT EXISTS idx_usage_sessions_end_at ON usage_sessions(endAt);
+	CREATE INDEX IF NOT EXISTS idx_usage_sessions_status ON usage_sessions(status);
+
+	CREATE TABLE IF NOT EXISTS outbox_events (
+		id BIGSERIAL PRIMARY KEY,
+		event_id VARCHAR(255) NOT NULL UNIQUE,
+		event_type VARCHAR(100) NOT NULL,
+		session_id VARCHAR(255) NOT NULL,
+		sequence BIGINT NOT NULL,
+		payload JSONB,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		published_at TIMESTAMP,
+		retry_count INT NOT NULL DEFAULT 0,
+		last_error TEXT
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_outbox_events_event_id ON outbox_events(event_id);
+	CREATE INDEX IF NOT EXISTS idx_outbox_events_published_at ON outbox_events(published_at);
+
+	CREATE TABLE IF NOT EXISTS processed_billing_events (
+		id BIGSERIAL PRIMARY KEY,
+		event_id VARCHAR(255) NOT NULL UNIQUE,
+		session_id VARCHAR(255) NOT NULL,
+		sequence BIGINT NOT NULL,
+		transaction_id VARCHAR(255) NOT NULL,
+		processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_processed_billing_events_event_id ON processed_billing_events(event_id);
+
+	CREATE TABLE IF NOT EXISTS processed_outbox_events (
+		id BIGSERIAL PRIMARY KEY,
+		event_id VARCHAR(255) NOT NULL UNIQUE,
+		session_id VARCHAR(255) NOT NULL,
+		sequence BIGINT NOT NULL,
+		processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_processed_outbox_events_event_id ON processed_outbox_events(event_id);
+	`
+
+	_, err := p.db.ExecContext(ctx, schema)
+	if err != nil {
+		return fmt.Errorf("failed to initialize schema: %w", err)
+	}
+
+	return nil
+}

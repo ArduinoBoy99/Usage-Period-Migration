@@ -9,8 +9,6 @@ import (
 
 	"usage-period-migration/pkg/repository/kafka"
 	"usage-period-migration/pkg/repository/sql"
-
-	"github.com/google/uuid"
 )
 
 var logger *slog.Logger
@@ -115,7 +113,7 @@ func (s *outboxPublisherService) processOnce(
 		slog.Int("worker_id", workerID),
 		slog.Int("event_count", len(events)))
 
-	successIDs := make([]uuid.UUID, 0, len(events))
+	successIDs := make([]int64, 0, len(events))
 	failureCount := 0
 
 	for _, event := range events {
@@ -170,8 +168,8 @@ func (s *outboxPublisherService) processOnce(
 	return len(successIDs), nil
 }
 
-func chunkIDs(ids []uuid.UUID, size int) [][]uuid.UUID {
-	var chunks [][]uuid.UUID
+func chunkIDs(ids []int64, size int) [][]int64 {
+	var chunks [][]int64
 	for size < len(ids) {
 		ids, chunks = ids[size:], append(chunks, ids[:size])
 	}

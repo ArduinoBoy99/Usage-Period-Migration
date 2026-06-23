@@ -213,7 +213,6 @@ func (s *sessionService) FinishSession(ctx context.Context, sessionID string) er
 
 	// Create outbox event
 	outboxEvent := &repo.OutboxEvent{
-		ID:          uuid.New(),
 		EventID:     eventID,
 		EventType:   "events",
 		SessionID:   session.ID,

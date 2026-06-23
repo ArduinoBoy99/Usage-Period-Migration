@@ -181,7 +181,6 @@ func (s *outboxService) CreateOutboxEvent(ctx context.Context, session *repo.Usa
 
 	// Create outbox event
 	outboxEvent := &repo.OutboxEvent{
-		ID:          uuid.New(),
 		EventID:     eventID,
 		EventType:   EventTypeBillingChunk,
 		SessionID:   session.ID,

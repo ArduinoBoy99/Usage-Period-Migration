@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // ============================================================================
@@ -41,7 +39,7 @@ func (p *PostgresDB) GetProcessedOutboxEventByEventID(ctx context.Context, event
 }
 
 // GetProcessedOutboxEventByID retrieves a processed event by ID
-func (p *PostgresDB) GetProcessedOutboxEventByID(ctx context.Context, id uuid.UUID) (*ProcessedOutboxEvent, error) {
+func (p *PostgresDB) GetProcessedOutboxEventByID(ctx context.Context, id int64) (*ProcessedOutboxEvent, error) {
 	query := `
 		SELECT id, event_id, session_id, sequence,  processed_at
 		FROM processed_outbox_events
@@ -71,12 +69,11 @@ func (p *PostgresDB) GetProcessedOutboxEventByID(ctx context.Context, id uuid.UU
 func (p *PostgresDB) InsertProcessedOutboxEvent(ctx context.Context, event *ProcessedOutboxEvent) error {
 	query := `
 		INSERT INTO processed_outbox_events (
-			id, event_id, session_id, sequence,  processed_at
-		) VALUES ($1, $2, $3, $4, $5)
+			event_id, session_id, sequence,  processed_at
+		) VALUES ($1, $2, $3, $4)
 	`
 
 	_, err := p.db.ExecContext(ctx, query,
-		event.ID,
 		event.EventID,
 		event.SessionID,
 		event.Sequence,
@@ -94,12 +91,11 @@ func (p *PostgresDB) InsertProcessedOutboxEvent(ctx context.Context, event *Proc
 func (p *PostgresDB) InsertProcessedOutboxEventTx(ctx context.Context, tx *sql.Tx, event *ProcessedOutboxEvent) error {
 	query := `
 		INSERT INTO processed_outbox_events (
-			id, event_id, session_id, sequence,  processed_at
-		) VALUES ($1, $2, $3, $4, $5)
+			event_id, session_id, sequence,  processed_at
+		) VALUES ($1, $2, $3, $4)
 	`
 
 	_, err := tx.ExecContext(ctx, query,
-		event.ID,
 		event.EventID,
 		event.SessionID,
 		event.Sequence,
@@ -148,7 +144,7 @@ func (p *PostgresDB) ProcessedOutboxEventExistsTx(ctx context.Context, tx *sql.T
 }
 
 // DeleteProcessedOutboxEvent deletes a processed event by ID
-func (p *PostgresDB) DeleteProcessedOutboxEvent(ctx context.Context, id uuid.UUID) error {
+func (p *PostgresDB) DeleteProcessedOutboxEvent(ctx context.Context, id int64) error {
 	query := `
 		DELETE FROM processed_outbox_events
 		WHERE id = $1
