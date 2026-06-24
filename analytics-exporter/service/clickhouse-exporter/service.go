@@ -57,14 +57,13 @@ func (s *analyticsService) StartConsumer(ctx context.Context) error {
 	brokers := []string{"kafka:9092"}
 
 	s.consumer = kafka.NewReader(kafka.ReaderConfig{
-		Brokers:        brokers,
-		Topic:          TopicBillingProcessed,
-		GroupID:        ConsumerGroup,
-		MinBytes:       1,
-		MaxBytes:       10e6,
-		CommitInterval: time.Second,
-		StartOffset:    kafka.LastOffset,
-		MaxWait:        500 * time.Millisecond,
+		Brokers:     brokers,
+		Topic:       TopicBillingProcessed,
+		GroupID:     ConsumerGroup,
+		MinBytes:    1,
+		MaxBytes:    10e6,
+		StartOffset: kafka.LastOffset,
+		MaxWait:     500 * time.Millisecond,
 	})
 	defer s.consumer.Close()
 

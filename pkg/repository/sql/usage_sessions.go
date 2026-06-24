@@ -92,7 +92,7 @@ func (p *PostgresDB) GetUnbilledUsageSessions(ctx context.Context, limit int, in
 		       region, sandbox_class, recorded_at, billing_status
 		FROM usage_sessions
 		WHERE status = $1
-		  AND last_billed_at < NOW() - $3
+		  AND last_billed_at < $3
 		ORDER BY last_billed_at ASC
 		LIMIT $2
 	`
@@ -148,7 +148,7 @@ func (p *PostgresDB) GetUnbilledUsageSessionsAfterCursor(ctx context.Context, la
 		       region, sandbox_class, recorded_at, billing_status
 		FROM usage_sessions
 		WHERE status = $1
-		  AND last_billed_at < NOW() - INTERVAL $4
+		  AND last_billed_at < $4
 		  AND ($2 = '' OR id > $2)
 		ORDER BY id ASC
 		LIMIT $3

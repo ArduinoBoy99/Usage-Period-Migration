@@ -14,11 +14,13 @@ import (
 const (
 	postgresBatchSize     int    = 1000
 	eventTypeBillingChunk string = "billing_chunk_created"
+	replayBatchSize       int    = 15
 )
 
 // OutboxPublisherService defines pure leasing worker interface
 type OutboxPublisherService interface {
 	StartWorkers(ctx context.Context, numWorkers int, pollInterval time.Duration, batchSize int)
+	StartReplayer(ctx context.Context, interval time.Duration)
 }
 
 type outboxPublisherService struct {
@@ -227,4 +229,65 @@ func BillingChunkToKafkaPayload(created sql.BillingChunkCreated) *kafka.BillingC
 		RegionType:     created.RegionType,
 		SandboxClass:   created.SandboxClass,
 	}
+}
+
+// StartReplayer periodically re-publishes already-published events to Kafka WITHOUT the
+// dedupe gate. This intentionally produces duplicate deliveries so the billing-processor's
+// idempotency (dedupe by event_id) is exercised end-to-end. It never mutates DB state.
+func (s *outboxPublisherService) StartReplayer(ctx context.Context, interval time.Duration) {
+	s.logger.Info("Starting outbox replayer (idempotency demo)",
+		slog.Duration("interval", interval),
+		slog.Int("batch_size", replayBatchSize))
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Info("Replayer stopping")
+			return
+		case <-ticker.C:
+			if err := s.replayOnce(ctx); err != nil {
+				s.logger.Error("Replayer error", slog.Any("error", err))
+			}
+		}
+	}
+}
+
+func (s *outboxPublisherService) replayOnce(ctx context.Context) error {
+	events, err := s.db.GetPublishedOutboxEvents(ctx, eventTypeBillingChunk, replayBatchSize)
+	if err != nil {
+		return fmt.Errorf("replay fetch failed: %w", err)
+	}
+	if len(events) == 0 {
+		return nil
+	}
+
+	replayed := 0
+	for _, event := range events {
+		var payload sql.BillingChunkCreated
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			s.logger.Warn("Replay: invalid payload json",
+				slog.String("event_id", event.EventID),
+				slog.String("error", err.Error()))
+			continue
+		}
+
+		kafkaPayload := BillingChunkToKafkaPayload(payload)
+		if err := s.validateBillingChunk(kafkaPayload); err != nil {
+			continue
+		}
+		if err := s.kafkaProducer.ProduceBillingChunk(ctx, kafkaPayload); err != nil {
+			s.logger.Error("Replay publish error",
+				slog.String("event_id", event.EventID),
+				slog.Any("error", err))
+			continue
+		}
+		replayed++
+	}
+
+	s.logger.Info("Replayed published events for idempotency demo",
+		slog.Int("count", replayed))
+	return nil
 }

@@ -7,11 +7,11 @@ Instead of directly polling usage records, the Usage Service becomes the sole ow
 
 When a billing chunk is generated, the Usage Service updates last_billed_at and inserts an event into an outbox_events table within the same database transaction. This guarantees that billing state changes and event creation remain atomic.
 
-An Outbox Publisher service continuously polls unpublished events from the outbox table, performs idempotency checks and publishes them to a Kafka topic named usage-billing-chunks. Once Kafka acknowledges successful publication, the outbox event is marked as published.
+An Outbox Publisher service continuously polls unpublished events from the outbox table, performs idempotency checks against a processed_outbox_events table keyed by a unique event_id, and publishes them to a Kafka topic named usage-billing-chunks. The published marker and the processed record are written in the same transaction, and any event already recorded as processed is marked published in that transaction so it is never re-leased. Once Kafka acknowledges successful publication, the outbox event is marked as published.
 
-The Billing Processor consumes events from Kafka, performs idempotency checks, transforms billing chunks into Metronome usage events, and submits them to Metronome. After successful processing, offsets are committed and processing state is recorded. Analytics consumers can independently subscribe to Kafka and export usage data to ClickHouse without affecting billing throughput.
+The Billing Processor consumes events from Kafka, performs an idempotency check, transforms billing chunks into Metronome usage events, and submits them to Metronome. Successful processing is recorded by inserting a row into processed_billing_events (unique on event_id) within the same transaction that completes the work, so a duplicate delivery is rejected by the unique constraint rather than re-charged. Because the billing-processed event is emitted before the transaction commits, that topic is delivered at-least-once; Analytics consumers therefore also deduplicate by event_id when exporting to ClickHouse, and can subscribe independently without affecting billing throughput.
 
-This architecture decouples usage tracking from billing ingestion, removes direct database scraping, and provides durable event storage in case downstream services become unavailable.
+This architecture decouples usage tracking from billing ingestion, removes direct database scraping, and provides durable event storage in case downstream services become unavailable. A separate migration-service handles one-shot schema initialization and table/index creation prior to the services starting.
 
 ## 2. Scaling Strategy
 
@@ -21,15 +21,17 @@ The Usage Service scheduler only queries sessions where:
 
 `"status" = "SESSION_ACTIVE" AND last_billed_at <= now() - billing_interval`
 
+Newly created sessions are seeded with last_billed_at set to their start_at rather than NULL, because `NULL < now() - billing_interval` never evaluates to true and would otherwise hide fresh sessions from the scheduler entirely.
+
 When a session becomes eligible for billing, the scheduler updates last_billed_at, increments a billing sequence number, and writes a billing event to the outbox table in a single transaction.
 
-To minimize database contention, index is created on (last_billed_at, end_at) and process sessions in batches using:
+To minimize database contention, separate indexes are created on last_billed_at, end_at, and status, and sessions are processed in batches using:
 
 `FOR UPDATE SKIP LOCKED`
 
 This allows multiple scheduler instances to run concurrently while ensuring that a session is only processed by a single worker.
 
-For Kafka partitioning, I used sandbox_id as the message key. This guarantees ordering for billing events belonging to the same sandbox while evenly distributing load across partitions. I would initially provision 48 partitions before jumping to 96 after hitting 1 billion monthly events, providing sufficient headroom for future growth without frequent repartitioning.
+For Kafka partitioning, I used sandbox_id as the message key. This guarantees ordering for billing events belonging to the same sandbox while evenly distributing load across partitions. Downstream, the billing-processed topic is instead keyed by session_id, preserving per-session ordering for analytics while the upstream chunk topic preserves per-sandbox ordering. I would initially provision 48 partitions before jumping to 96 after hitting 1 billion monthly events, providing sufficient headroom for future growth without frequent repartitioning.
 
 The Billing Processor would run as a horizontally scalable Kafka consumer group named billing-processors. Kafka automatically distributes partitions among available consumers, allowing throughput to scale linearly by adding more processor replicas. Each processor performs idempotency checks, sends events to Metronome, records successful processing, and commits offsets only after successful completion.
 
@@ -39,15 +41,17 @@ At the projected scale at the end of the year of approximately 500 million billi
 
 To guarantee that billing events are never lost, the system uses the Transactional Outbox Pattern. Billing state updates and outbox event creation occur within the same database transaction. If Kafka, the Outbox Publisher, or downstream services become unavailable, billing events remain safely persisted in PostgreSQL until delivery succeeds.
 
-The Outbox Publisher provides at-least-once delivery semantics when publishing events to Kafka. Duplicate Kafka messages are expected and handled through idempotent processing.
+The Outbox Publisher provides at-least-once delivery semantics when publishing events to Kafka. Duplicate Kafka messages are expected and handled through idempotent processing at every stage. The primary deduplication key end-to-end is the event_id, enforced by unique constraints on processed_outbox_events (publisher) and processed_billing_events (consumer); an already-seen event_id is skipped before any external side effect occurs.
 
-The Billing Processor maintains idempotency by assigning every billing chunk a deterministic transaction identifier, such as:
+As a final backstop at the external sink, the Billing Processor also assigns every billing chunk a deterministic transaction identifier:
 
 session_id:sequence
 
-This identifier is used when submitting usage events to Metronome and serves as the basis for deduplication.
+This identifier is submitted to Metronome so that even if the same chunk reaches it more than once, Metronome's idempotent ingestion collapses the duplicates.
 
 Kafka offsets are committed only after successful processing. If a consumer crashes after processing an event but before committing its offset, Kafka will redeliver the message. The processor detects that the event has already been processed and safely skips duplicate work.
+
+To exercise this guarantee, the pipeline can periodically replay already-published outbox events, injecting deliberate duplicate deliveries. The Billing Processor detects the repeated event_id, skips the redundant work, and downstream billing and analytics counts remain unchanged, demonstrating that duplicate events cannot cause double charges.
 
 This design ensures that outages affecting Kafka, Metronome, ClickHouse, or individual processor instances cannot result in lost billing events or duplicate customer charges.
 
@@ -73,7 +77,7 @@ The system uses Kafka as the primary transport layer between the Outbox service 
 
 The system operates with:
 
-- 48–96 Kafka partitions per high-throughput topic (e.g., billing-chunks, outbox-events)
+- 48–96 Kafka partitions per high-throughput topic (e.g., `usage-billing-chunks`, `billing-processed`)
 - Consumer groups for independent processing stages:
   - Outbox Publisher group
   - Billing Processor group

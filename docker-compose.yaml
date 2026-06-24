@@ -48,7 +48,7 @@ services:
     command: |
       "
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
-        --topic usage-outbox-chunks \
+        --topic usage-billing-chunks \
         --partitions 48 \
         --replication-factor 1
   
@@ -142,6 +142,7 @@ services:
       context: .
       dockerfile: outbox-publisher/Dockerfile
     environment:
+      REPLAY_ENABLED: "true"
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: postgres

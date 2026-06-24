@@ -11,7 +11,7 @@ import (
 
 const (
 	// TopicUsageBillingChunks is the topic name for outbox chunk events
-	TopicUsageBillingChunks = "usage-outbox-chunks"
+	TopicUsageBillingChunks = "usage-billing-chunks"
 )
 
 // Config holds Kafka configuration

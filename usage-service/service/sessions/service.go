@@ -126,7 +126,7 @@ func (s *sessionService) CreateSession(ctx context.Context, orgID string, sandbo
 		StartAt:         startAt,
 		EndAt:           nil,
 		Status:          status,
-		LastBilledAt:    nil,
+		LastBilledAt:    &startAt,
 		BillingStatus:   repo.BILLING_ACTIVE,
 		BillingSequence: 0,
 		CPU:             cpu,

@@ -47,3 +47,19 @@ func GetEnvAsSlice(key string, defaultValue []string) []string {
 	}
 	return result
 }
+
+func GetEnvAsBool(key string, defaultValue bool) bool {
+	valueStr := os.Getenv(key)
+	if valueStr == "" {
+		return defaultValue
+	}
+
+	switch valueStr {
+	case "true", "1", "yes":
+		return true
+	case "false", "0", "no":
+		return false
+	default:
+		return defaultValue
+	}
+}

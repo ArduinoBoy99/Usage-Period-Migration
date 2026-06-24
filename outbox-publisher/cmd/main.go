@@ -97,6 +97,12 @@ func (app *Application) startLeasingWorkers() {
 	app.publisherService.StartWorkers(app.rootCtx, numWorkers, pollInterval, batchSize)
 }
 
+func (app *Application) startReplayer() {
+	interval := time.Duration(config.GetEnvAsInt("REPLAY_INTERVAL_SEC", 180)) * time.Second
+	logger.Info("Starting outbox replayer", slog.Duration("interval", interval))
+	go app.publisherService.StartReplayer(app.rootCtx, interval)
+}
+
 func (app *Application) start() error {
 	logger.Info("Starting application")
 
@@ -111,6 +117,9 @@ func (app *Application) start() error {
 
 	app.initServices()
 	app.startLeasingWorkers()
+	if config.GetEnvAsBool("REPLAY_ENABLED", false) {
+		app.startReplayer()
+	}
 
 	app.Run = true
 	logger.Info("Outbox Publisher Running",

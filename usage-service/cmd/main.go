@@ -118,8 +118,6 @@ func (app *Application) startPeriodicSessionFinisher() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 
-		time.Sleep(1 * time.Minute)
-
 		for {
 			select {
 			case <-app.rootCtx.Done():
@@ -200,7 +198,7 @@ func (app *Application) start() error {
 	logger.Info("Application started successfully")
 	logger.Info("Usage Service Simulation Running",
 		slog.String("session_creation", "every 40 seconds"),
-		slog.String("session_finishing", "every 2 minutes"),
+		slog.String("session_finishing", "every 5 minutes"),
 		slog.String("outbox_scanning", "every 1 minute"))
 
 	return nil

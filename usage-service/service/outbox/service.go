@@ -149,7 +149,11 @@ func (s *outboxService) CreateOutboxEvent(ctx context.Context, session *repo.Usa
 	defer tx.Rollback()
 
 	// Calculate billing period
-	from := session.LastBilledAt
+	from := session.StartAt
+	if session.LastBilledAt != nil {
+		from = *session.LastBilledAt
+	}
+
 	to := time.Now()
 
 	// If session has ended, and we haven't billed until the end, bill until endAt
@@ -169,7 +173,7 @@ func (s *outboxService) CreateOutboxEvent(ctx context.Context, session *repo.Usa
 		SessionID:      session.ID,
 		SandboxID:      session.SandboxID,
 		Sequence:       newSequence,
-		From:           *from,
+		From:           from,
 		To:             to,
 		CPU:            session.CPU,
 		GPU:            session.GPU,

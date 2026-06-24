@@ -325,7 +325,7 @@ func (s *billingService) SendToMetronome(ctx context.Context, payload *Metronome
 		slog.String("payload", string(payloadJSON)))
 
 	// Simulate API call delay
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 
 	// Metronome provides idempotent ingestion via transaction_id
 	s.logger.Info("Metronome accepted transaction",

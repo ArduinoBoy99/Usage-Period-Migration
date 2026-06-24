@@ -297,3 +297,40 @@ func (p *PostgresDB) ResetRandomPublishedOutboxEvents(ctx context.Context, event
 
 	return rowsAffected, nil
 }
+
+// GetPublishedOutboxEvents fetches up to `limit` already-published events of a type.
+// Read-only; used by the replayer to re-emit duplicates and exercise consumer idempotency.
+func (p *PostgresDB) GetPublishedOutboxEvents(ctx context.Context, eventType string, limit int) ([]*OutboxEvent, error) {
+	query := `
+		SELECT id, event_id, event_type, session_id, sequence, payload,
+		       created_at, published_at, retry_count, last_error
+		FROM outbox_events
+		WHERE published_at IS NOT NULL
+		  AND event_type = $1
+		ORDER BY random()
+		LIMIT $2
+	`
+
+	rows, err := p.db.QueryContext(ctx, query, eventType, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query published outbox events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []*OutboxEvent
+	for rows.Next() {
+		event := &OutboxEvent{}
+		if err := rows.Scan(
+			&event.ID, &event.EventID, &event.EventType, &event.SessionID,
+			&event.Sequence, &event.Payload, &event.CreatedAt, &event.PublishedAt,
+			&event.RetryCount, &event.LastError,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan published outbox event: %w", err)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating published outbox events: %w", err)
+	}
+	return events, nil
+}
