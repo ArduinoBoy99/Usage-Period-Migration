@@ -58,7 +58,7 @@ func (p *PostgresDB) GetProcessedBillingEventByID(ctx context.Context, id int64)
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("processed event not found: %s", id)
+		return nil, fmt.Errorf("processed event not found: %d$4", id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get processed event: %w", err)
@@ -165,7 +165,7 @@ func (p *PostgresDB) DeleteProcessedBillingEvent(ctx context.Context, id int64) 
 	}
 
 	if rowsAffected == 0 {
-		return fmt.Errorf("processed event not found: %s", id)
+		return fmt.Errorf("processed event not found: %d", id)
 	}
 
 	return nil

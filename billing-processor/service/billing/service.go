@@ -3,8 +3,9 @@ package billing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -65,22 +66,24 @@ type billingService struct {
 	kafkaConnector *kafkaRepo.KafkaConnector
 	consumer       *kafka.Reader
 	producer       *kafka.Writer
+	logger         *slog.Logger
 }
 
 // NewService creates a new Billing Processor service
-func NewService(db *sql.PostgresDB, kafkaConnector *kafkaRepo.KafkaConnector) Service {
+func NewService(db *sql.PostgresDB, kafkaConnector *kafkaRepo.KafkaConnector, logger *slog.Logger) Service {
 	return &billingService{
 		db:             db,
 		kafkaConnector: kafkaConnector,
+		logger:         logger,
 	}
 }
 
 // StartConsumer starts consuming billing chunk events from Kafka
 func (s *billingService) StartConsumer(ctx context.Context) error {
-	log.Println("Starting Kafka consumer for billing chunks...")
+	s.logger.Info("Starting Kafka consumer for billing chunks")
 
 	// Get Kafka brokers from environment or use default
-	brokers := []string{"localhost:9092"}
+	brokers := []string{"kafka:9092"}
 
 	// Create Kafka reader (consumer)
 	s.consumer = kafka.NewReader(kafka.ReaderConfig{
@@ -107,13 +110,15 @@ func (s *billingService) StartConsumer(ctx context.Context) error {
 	}
 	defer s.producer.Close()
 
-	log.Printf("Kafka consumer started - Topic: %s, ConsumerGroup: %s", TopicUsageBillingChunks, ConsumerGroup)
+	s.logger.Info("Kafka consumer started",
+		slog.String("topic", TopicUsageBillingChunks),
+		slog.String("consumer_group", ConsumerGroup))
 
 	// Consume messages
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Stopping Kafka consumer...")
+			s.logger.Info("Stopping Kafka consumer")
 			return ctx.Err()
 		default:
 			// Read message with timeout
@@ -122,16 +127,16 @@ func (s *billingService) StartConsumer(ctx context.Context) error {
 			cancel()
 
 			if err != nil {
-				if err == context.DeadlineExceeded || err == context.Canceled {
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 					continue
 				}
-				log.Printf("Error reading message: %v", err)
+				s.logger.Error("Error reading message", slog.Any("error", err))
 				continue
 			}
 
 			// Process message
 			if err := s.processMessage(ctx, msg); err != nil {
-				log.Printf("Error processing message: %v", err)
+				s.logger.Error("Error processing message", slog.Any("error", err))
 				// Continue processing other messages
 			}
 		}
@@ -140,8 +145,10 @@ func (s *billingService) StartConsumer(ctx context.Context) error {
 
 // processMessage processes a single Kafka message
 func (s *billingService) processMessage(ctx context.Context, msg kafka.Message) error {
-	log.Printf("Received message - Partition: %d, Offset: %d, Key: %s",
-		msg.Partition, msg.Offset, string(msg.Key))
+	s.logger.Info("Received message",
+		slog.Int("partition", msg.Partition),
+		slog.Int64("offset", msg.Offset),
+		slog.String("key", string(msg.Key)))
 
 	// Step 1: Parse the event
 	var event kafkaRepo.BillingChunkCreated
@@ -149,47 +156,64 @@ func (s *billingService) processMessage(ctx context.Context, msg kafka.Message) 
 		return fmt.Errorf("failed to unmarshal billing chunk event: %w", err)
 	}
 
-	log.Printf("Processing billing chunk - EventID: %s, SessionID: %s, Sequence: %d",
-		event.EventID, event.SessionID, event.Sequence)
+	s.logger.Info("Processing billing chunk",
+		slog.String("event_id", event.EventID),
+		slog.String("session_id", event.SessionID),
+		slog.Int64("sequence", event.Sequence))
 
 	// Process the billing chunk
 	if err := s.ProcessBillingChunk(ctx, &event); err != nil {
 		return fmt.Errorf("failed to process billing chunk: %w", err)
 	}
 
-	log.Printf("Successfully processed billing chunk - EventID: %s", event.EventID)
+	s.logger.Info("Successfully processed billing chunk",
+		slog.String("event_id", event.EventID))
+
 	return nil
 }
 
 // ProcessBillingChunk processes a single billing chunk event (Steps 2-5)
 func (s *billingService) ProcessBillingChunk(ctx context.Context, event *kafkaRepo.BillingChunkCreated) error {
 	// Step 2: Idempotency Check (dedupe by event_id)
-	log.Printf("[Step 2] Idempotency check for event: %s", event.EventID)
+	s.logger.Info("Idempotency check for event",
+		slog.String("step", "2"),
+		slog.String("event_id", event.EventID))
+
 	processed, err := s.CheckIdempotency(ctx, event.EventID)
 	if err != nil {
 		return fmt.Errorf("idempotency check failed: %w", err)
 	}
 
 	if processed {
-		log.Printf("Event %s already processed, skipping", event.EventID)
+		s.logger.Info("Event already processed, skipping",
+			slog.String("event_id", event.EventID))
 		return nil
 	}
 
 	// Step 3: Build Metronome Payload
-	log.Printf("[Step 3] Building Metronome payload for event: %s", event.EventID)
+	s.logger.Info("Building Metronome payload",
+		slog.String("step", "3"),
+		slog.String("event_id", event.EventID))
+
 	metronomePayload, err := s.BuildMetronomePayload(event)
 	if err != nil {
 		return fmt.Errorf("failed to build Metronome payload: %w", err)
 	}
 
 	// Step 4: Send to Metronome
-	log.Printf("[Step 4] Sending to Metronome - TransactionID: %s", metronomePayload.TransactionID)
+	s.logger.Info("Sending to Metronome",
+		slog.String("step", "4"),
+		slog.String("transaction_id", metronomePayload.TransactionID))
+
 	if err := s.SendToMetronome(ctx, metronomePayload); err != nil {
 		return fmt.Errorf("failed to send to Metronome: %w", err)
 	}
 
 	// Step 5: Publish BillingProcessed Event
-	log.Printf("[Step 5] Publishing billing processed event for: %s", event.EventID)
+	s.logger.Info("Publishing billing processed event",
+		slog.String("step", "5"),
+		slog.String("event_id", event.EventID))
+
 	billingProcessedEvent := &BillingProcessedEvent{
 		EventID:        event.EventID,
 		SessionID:      event.SessionID,
@@ -210,11 +234,13 @@ func (s *billingService) ProcessBillingChunk(ctx context.Context, event *kafkaRe
 	}
 
 	if err := s.db.InsertProcessedBillingEvent(ctx, processedEvent); err != nil {
-		log.Printf("Warning: failed to record processed event: %v", err)
+		s.logger.Warn("Failed to record processed event",
+			slog.Any("error", err))
 		// Don't fail the entire process if we can't record it
 	}
 
-	log.Printf("✓ Successfully completed billing for event: %s", event.EventID)
+	s.logger.Info("Successfully completed billing",
+		slog.String("event_id", event.EventID))
 	return nil
 }
 
@@ -226,9 +252,11 @@ func (s *billingService) CheckIdempotency(ctx context.Context, eventID string) (
 	}
 
 	if exists {
-		log.Printf("✓ Idempotency: Event %s already processed", eventID)
+		s.logger.Info("Idempotency: Event already processed",
+			slog.String("event_id", eventID))
 	} else {
-		log.Printf("✓ Idempotency: Event %s is new", eventID)
+		s.logger.Info("Idempotency: Event is new",
+			slog.String("event_id", eventID))
 	}
 
 	return exists, nil
@@ -277,8 +305,10 @@ func (s *billingService) BuildMetronomePayload(event *kafkaRepo.BillingChunkCrea
 		Properties:    properties,
 	}
 
-	log.Printf("✓ Built Metronome payload - TransactionID: %s, CustomerID: %s, Duration: %.2fh",
-		transactionID, event.OrganizationID, durationHours)
+	s.logger.Info("Built Metronome payload",
+		slog.String("transaction_id", transactionID),
+		slog.String("customer_id", event.OrganizationID),
+		slog.Float64("duration_hours", durationHours))
 
 	return payload, nil
 }
@@ -292,13 +322,15 @@ func (s *billingService) SendToMetronome(ctx context.Context, payload *Metronome
 		return fmt.Errorf("failed to marshal Metronome payload: %w", err)
 	}
 
-	log.Printf("✓ Sending to Metronome (simulated):\n%s", string(payloadJSON))
+	s.logger.Info("Sending to Metronome (simulated)",
+		slog.String("payload", string(payloadJSON)))
 
 	// Simulate API call delay
 	time.Sleep(100 * time.Millisecond)
 
 	// Metronome provides idempotent ingestion via transaction_id
-	log.Printf("✓ Metronome accepted transaction: %s", payload.TransactionID)
+	s.logger.Info("Metronome accepted transaction",
+		slog.String("transaction_id", payload.TransactionID))
 
 	return nil
 }
@@ -324,8 +356,9 @@ func (s *billingService) PublishBillingProcessed(ctx context.Context, event *Bil
 		return fmt.Errorf("failed to write message to Kafka: %w", err)
 	}
 
-	log.Printf("✓ Published billing-processed event - EventID: %s, SessionID: %s",
-		event.EventID, event.SessionID)
+	s.logger.Info("Published billing-processed event",
+		slog.String("event_id", event.EventID),
+		slog.String("session_id", event.SessionID))
 
 	return nil
 }

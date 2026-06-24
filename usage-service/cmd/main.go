@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,12 +10,18 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"usage-period-migration/pkg/config"
 	"usage-period-migration/pkg/repository/sql"
 	"usage-period-migration/usage-service/service/outbox"
 	"usage-period-migration/usage-service/service/sessions"
 )
 
 var logger *slog.Logger
+
+const (
+	test_outbox_interval time.Duration = time.Duration(time.Minute * 2) // 2 minute for testing
+	outbox_interval      time.Duration = time.Duration(time.Hour * 1)   // 1 minute for production
+)
 
 type Application struct {
 	Run             bool
@@ -33,12 +40,12 @@ type Application struct {
 
 func (app *Application) initDatabase() error {
 	dbConfig := sql.Config{
-		Host:     getEnv("DB_HOST", "localhost"),
-		Port:     getEnvAsInt("DB_PORT", 5432),
-		User:     getEnv("DB_USER", "postgres"),
-		Password: getEnv("DB_PASSWORD", "password"),
-		DBName:   getEnv("DB_NAME", "usage_db"),
-		SSLMode:  getEnv("DB_SSL_MODE", "disable"),
+		Host:     config.GetEnv("DB_HOST", "localhost"),
+		Port:     config.GetEnvAsInt("DB_PORT", 5432),
+		User:     config.GetEnv("DB_USER", "postgres"),
+		Password: config.GetEnv("DB_PASSWORD", "password"),
+		DBName:   config.GetEnv("DB_NAME", "usage_db"),
+		SSLMode:  config.GetEnv("DB_SSL_MODE", "disable"),
 	}
 
 	logger.Info("Connecting to database",
@@ -55,11 +62,6 @@ func (app *Application) initDatabase() error {
 	app.db = db
 	logger.Info("Database connection established")
 
-	if err := app.db.InitializeSchema(context.Background()); err != nil {
-		logger.Error("Failed to initialize database schema", slog.Any("error", err))
-		os.Exit(1)
-	}
-
 	return nil
 }
 
@@ -67,7 +69,7 @@ func (app *Application) initServices() {
 	app.sessionsService = sessions.NewService(app.db)
 	logger.Info("Sessions service initialized")
 
-	app.outboxService = outbox.NewService(app.db)
+	app.outboxService = outbox.NewService(app.db, logger, test_outbox_interval)
 	logger.Info("Outbox service initialized")
 }
 
@@ -97,7 +99,7 @@ func (app *Application) startPeriodicSessionCreator() {
 func (app *Application) bulkCreateSessions() {
 	logger.Info("Bulk Creating Sessions")
 
-	count := getEnvAsInt("SESSION_CREATE_COUNT", 10)
+	count := config.GetEnvAsInt("SESSION_CREATE_COUNT", 10)
 
 	if err := app.sessionsService.GenerateBulkActiveSessions(app.rootCtx, count); err != nil {
 		logger.Error("Error creating bulk sessions",
@@ -132,7 +134,7 @@ func (app *Application) startPeriodicSessionFinisher() {
 func (app *Application) finishActiveSessions() {
 	logger.Info("Finishing Active Sessions")
 
-	batchSize := getEnvAsInt("SESSION_FINISH_BATCH_SIZE", 50)
+	batchSize := config.GetEnvAsInt("SESSION_FINISH_BATCH_SIZE", 50)
 
 	count, err := app.sessionsService.FinishActiveSessions(app.rootCtx, batchSize)
 	if err != nil {
@@ -152,7 +154,7 @@ func (app *Application) startOutboxScanner() {
 		logger.Info("Starting outbox scanner", slog.String("interval", "every 1 minute"))
 
 		if err := app.outboxService.StartPeriodicScanner(app.rootCtx); err != nil {
-			if err != context.Canceled {
+			if !errors.Is(err, context.Canceled) {
 				logger.Error("Outbox scanner stopped with error", slog.Any("error", err))
 			} else {
 				logger.Info("Outbox scanner stopped gracefully")
@@ -238,24 +240,4 @@ func main() {
 	}
 
 	app.waitForShutdown()
-}
-
-// Helper functions for environment variables
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvAsInt(key string, defaultValue int) int {
-	valueStr := os.Getenv(key)
-	if valueStr == "" {
-		return defaultValue
-	}
-	var value int
-	if _, err := fmt.Sscanf(valueStr, "%d", &value); err != nil {
-		return defaultValue
-	}
-	return value
 }

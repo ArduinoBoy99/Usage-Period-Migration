@@ -52,6 +52,10 @@ func NewPostgresql(cfg Config) (*PostgresDB, error) {
 	return &PostgresDB{db: db}, nil
 }
 
+func (p *PostgresDB) Ping() error {
+	return p.db.PingContext(context.Background())
+}
+
 // Close closes the database connection
 func (p *PostgresDB) Close() error {
 	return p.db.Close()
@@ -72,25 +76,25 @@ func (p *PostgresDB) InitializeSchema(ctx context.Context) error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS usage_sessions (
 		id VARCHAR(255) PRIMARY KEY,
-		sandboxId VARCHAR(255) NOT NULL,
-		organizationId VARCHAR(255) NOT NULL,
-		startAt TIMESTAMP NOT NULL,
-		endAt TIMESTAMP,
+		sandbox_id VARCHAR(255) NOT NULL,
+		organization_id VARCHAR(255) NOT NULL,
+		start_at TIMESTAMP NOT NULL,
+		end_at TIMESTAMP,
 		status VARCHAR(50) NOT NULL,
-		lastBilledAt TIMESTAMP,
-		billingStatus VARCHAR(50) NOT NULL,
-		billingSequence BIGINT NOT NULL DEFAULT 0,
+		last_billed_at TIMESTAMP,
+		billing_status VARCHAR(50) NOT NULL,
+		billing_sequence BIGINT NOT NULL DEFAULT 0,
 		cpu FLOAT8,
 		gpu FLOAT8,
-		ramGB FLOAT8,
-		diskGB FLOAT8,
+		ram_gb FLOAT8,
+		disk_gb FLOAT8,
 		region VARCHAR(100) NOT NULL,
-		sandboxClass VARCHAR(50) NOT NULL DEFAULT 'container',
-		recordedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		sandbox_class VARCHAR(50) NOT NULL DEFAULT 'container',
+		recorded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
-	CREATE INDEX IF NOT EXISTS idx_usage_sessions_last_billed_at ON usage_sessions(lastBilledAt);
-	CREATE INDEX IF NOT EXISTS idx_usage_sessions_end_at ON usage_sessions(endAt);
+	CREATE INDEX IF NOT EXISTS idx_usage_sessions_last_billed_at ON usage_sessions(last_billed_at);
+	CREATE INDEX IF NOT EXISTS idx_usage_sessions_end_at ON usage_sessions(end_at);
 	CREATE INDEX IF NOT EXISTS idx_usage_sessions_status ON usage_sessions(status);
 
 	CREATE TABLE IF NOT EXISTS outbox_events (

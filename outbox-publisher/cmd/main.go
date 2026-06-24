@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"syscall"
 	"time"
+	"usage-period-migration/pkg/config"
 
 	"usage-period-migration/outbox-publisher/service/events"
 	"usage-period-migration/pkg/repository/kafka"
@@ -32,12 +33,12 @@ type Application struct {
 
 func (app *Application) initDatabase() error {
 	dbConfig := sql.Config{
-		Host:     getEnv("DB_HOST", "localhost"),
-		Port:     getEnvAsInt("DB_PORT", 5432),
-		User:     getEnv("DB_USER", "postgres"),
-		Password: getEnv("DB_PASSWORD", "password"),
-		DBName:   getEnv("DB_NAME", "usage_db"),
-		SSLMode:  getEnv("DB_SSL_MODE", "disable"),
+		Host:     config.GetEnv("DB_HOST", "localhost"),
+		Port:     config.GetEnvAsInt("DB_PORT", 5432),
+		User:     config.GetEnv("DB_USER", "postgres"),
+		Password: config.GetEnv("DB_PASSWORD", "password"),
+		DBName:   config.GetEnv("DB_NAME", "usage_db"),
+		SSLMode:  config.GetEnv("DB_SSL_MODE", "disable"),
 	}
 
 	logger.Info("Connecting to database",
@@ -54,22 +55,17 @@ func (app *Application) initDatabase() error {
 	app.db = db
 	logger.Info("Database connection established")
 
-	if err := app.db.InitializeSchema(context.Background()); err != nil {
-		logger.Error("Failed to initialize database schema", slog.Any("error", err))
-		os.Exit(1)
-	}
-
 	return nil
 }
 
 func (app *Application) initKafka() error {
-	brokers := getEnvAsSlice("KAFKA_BROKERS", []string{"localhost:9092"})
+	brokers := config.GetEnvAsSlice("KAFKA_BROKERS", []string{"kafka:9092"})
 
 	kafkaConfig := kafka.Config{
 		Brokers:       brokers,
 		Topic:         kafka.TopicUsageBillingChunks,
-		ConsumerGroup: getEnv("KAFKA_CONSUMER_GROUP", "usage-outbox-processor"),
-		MaxAttempts:   getEnvAsInt("KAFKA_MAX_ATTEMPTS", 3),
+		ConsumerGroup: config.GetEnv("KAFKA_CONSUMER_GROUP", "usage-outbox-processor"),
+		MaxAttempts:   config.GetEnvAsInt("KAFKA_MAX_ATTEMPTS", 3),
 	}
 
 	logger.Info("Connecting to Kafka brokers", slog.Any("brokers", brokers))
@@ -85,14 +81,14 @@ func (app *Application) initKafka() error {
 }
 
 func (app *Application) initServices() {
-	app.publisherService = events.NewOutboxPublisherService(app.db, app.kafkaConnector)
+	app.publisherService = events.NewOutboxPublisherService(app.db, app.kafkaConnector, logger)
 	logger.Info("Outbox publisher service initialized")
 }
 
 func (app *Application) startLeasingWorkers() {
-	pollInterval := time.Duration(getEnvAsInt("POLL_INTERVAL_MS", 500)) * time.Millisecond
-	batchSize := getEnvAsInt("BATCH_SIZE", 500)
-	numWorkers := getEnvAsInt("NUM_WORKERS", runtime.NumCPU()*2)
+	pollInterval := time.Duration(config.GetEnvAsInt("POLL_INTERVAL_MS", 500)) * time.Millisecond
+	batchSize := config.GetEnvAsInt("BATCH_SIZE", 500)
+	numWorkers := config.GetEnvAsInt("NUM_WORKERS", runtime.NumCPU()*2)
 
 	logger.Info("Starting leasing workers",
 		slog.Int("num_workers", numWorkers),
@@ -181,47 +177,4 @@ func main() {
 	}
 
 	app.waitForShutdown()
-}
-
-// Helper functions for environment variables
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvAsInt(key string, defaultValue int) int {
-	valueStr := os.Getenv(key)
-	if valueStr == "" {
-		return defaultValue
-	}
-	var value int
-	if _, err := fmt.Sscanf(valueStr, "%d", &value); err != nil {
-		return defaultValue
-	}
-	return value
-}
-
-func getEnvAsSlice(key string, defaultValue []string) []string {
-	valueStr := os.Getenv(key)
-	if valueStr == "" {
-		return defaultValue
-	}
-	var result []string
-	var current string
-	for _, char := range valueStr {
-		if char == ',' {
-			if current != "" {
-				result = append(result, current)
-				current = ""
-			}
-		} else {
-			current += string(char)
-		}
-	}
-	if current != "" {
-		result = append(result, current)
-	}
-	return result
 }

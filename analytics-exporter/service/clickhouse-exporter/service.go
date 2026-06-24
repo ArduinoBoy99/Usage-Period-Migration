@@ -12,8 +12,6 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-var logger *slog.Logger
-
 const (
 	TopicBillingProcessed = "billing-processed"
 	ConsumerGroup         = "analytics-exporters"
@@ -41,20 +39,22 @@ type BillingProcessedEvent struct {
 type analyticsService struct {
 	kafkaConnector *kafkaRepo.KafkaConnector
 	consumer       *kafka.Reader
+	logger         *slog.Logger
 }
 
 // NewService creates a new Analytics Exporter service
-func NewService(kafkaConnector *kafkaRepo.KafkaConnector) Service {
+func NewService(kafkaConnector *kafkaRepo.KafkaConnector, logger *slog.Logger) Service {
 	return &analyticsService{
 		kafkaConnector: kafkaConnector,
+		logger:         logger,
 	}
 }
 
 // StartConsumer starts consuming billing-processed events from Kafka
 func (s *analyticsService) StartConsumer(ctx context.Context) error {
-	logger.Info("Starting Kafka consumer for billing-processed events...")
+	s.logger.Info("Starting Kafka consumer for billing-processed events...")
 
-	brokers := []string{"localhost:9092"}
+	brokers := []string{"kafka:9092"}
 
 	s.consumer = kafka.NewReader(kafka.ReaderConfig{
 		Brokers:        brokers,
@@ -80,12 +80,12 @@ func (s *analyticsService) StartConsumer(ctx context.Context) error {
 
 			var event BillingProcessedEvent
 			if err := json.Unmarshal(msg.Value, &event); err != nil {
-				logger.Error("failed to unmarshal event", slog.Any("error", err))
+				s.logger.Error("failed to unmarshal event", slog.Any("error", err))
 				continue
 			}
 
 			if err := s.ExportToClickhouse(ctx, &event); err != nil {
-				logger.Error("failed to export event", slog.Any("error", err))
+				s.logger.Error("failed to export event", slog.Any("error", err))
 				continue
 			}
 		}

@@ -56,7 +56,7 @@ func (p *PostgresDB) GetProcessedOutboxEventByID(ctx context.Context, id int64) 
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("processed event not found: %s", id)
+		return nil, fmt.Errorf("processed event not found: %d", id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get processed event: %w", err)
@@ -161,7 +161,7 @@ func (p *PostgresDB) DeleteProcessedOutboxEvent(ctx context.Context, id int64) e
 	}
 
 	if rowsAffected == 0 {
-		return fmt.Errorf("processed event not found: %s", id)
+		return fmt.Errorf("processed event not found: %d", id)
 	}
 
 	return nil

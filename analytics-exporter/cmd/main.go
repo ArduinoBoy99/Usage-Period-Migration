@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 	"usage-period-migration/analytics-exporter/service/clickhouse-exporter"
+	"usage-period-migration/pkg/config"
 
 	"usage-period-migration/pkg/repository/kafka"
 )
@@ -32,19 +34,19 @@ type Application struct {
 }
 
 func (app *Application) initKafka() error {
-	brokersStr := getEnv("KAFKA_BROKERS", "localhost:9092")
+	brokersStr := config.GetEnv("KAFKA_BROKERS", "kafka:9092")
 	brokers := strings.Split(brokersStr, ",")
 
 	kafkaConfig := kafka.Config{
 		Brokers:           brokers,
-		Topic:             getEnv("KAFKA_TOPIC", "billing-processed"),
-		ConsumerGroup:     getEnv("KAFKA_CONSUMER_GROUP", "analytics-exporters"),
-		MaxAttempts:       getEnvAsInt("KAFKA_MAX_ATTEMPTS", 3),
-		MinBytes:          getEnvAsInt("KAFKA_MIN_BYTES", 1),
-		MaxBytes:          getEnvAsInt("KAFKA_MAX_BYTES", 10485760),
-		CommitInterval:    time.Duration(getEnvAsInt("KAFKA_COMMIT_INTERVAL_MS", 1000)) * time.Millisecond,
-		SessionTimeout:    time.Duration(getEnvAsInt("KAFKA_SESSION_TIMEOUT_MS", 10000)) * time.Millisecond,
-		HeartbeatInterval: time.Duration(getEnvAsInt("KAFKA_HEARTBEAT_INTERVAL_MS", 3000)) * time.Millisecond,
+		Topic:             config.GetEnv("KAFKA_TOPIC", "billing-processed"),
+		ConsumerGroup:     config.GetEnv("KAFKA_CONSUMER_GROUP", "analytics-exporters"),
+		MaxAttempts:       config.GetEnvAsInt("KAFKA_MAX_ATTEMPTS", 3),
+		MinBytes:          config.GetEnvAsInt("KAFKA_MIN_BYTES", 1),
+		MaxBytes:          config.GetEnvAsInt("KAFKA_MAX_BYTES", 10485760),
+		CommitInterval:    time.Duration(config.GetEnvAsInt("KAFKA_COMMIT_INTERVAL_MS", 1000)) * time.Millisecond,
+		SessionTimeout:    time.Duration(config.GetEnvAsInt("KAFKA_SESSION_TIMEOUT_MS", 10000)) * time.Millisecond,
+		HeartbeatInterval: time.Duration(config.GetEnvAsInt("KAFKA_HEARTBEAT_INTERVAL_MS", 3000)) * time.Millisecond,
 	}
 
 	logger.Info("Connecting to Kafka brokers", slog.Any("brokers", brokers))
@@ -61,7 +63,7 @@ func (app *Application) initKafka() error {
 }
 
 func (app *Application) initServices() {
-	app.analyticsService = clickhouse_exporter.NewService(app.kafkaConnector)
+	app.analyticsService = clickhouse_exporter.NewService(app.kafkaConnector, logger)
 	logger.Info("Analytics exporter service initialized")
 }
 
@@ -72,7 +74,7 @@ func (app *Application) startAnalyticsConsumer() {
 		logger.Info("Starting analytics consumer")
 
 		if err := app.analyticsService.StartConsumer(app.rootCtx); err != nil {
-			if err != context.Canceled {
+			if !errors.Is(err, context.Canceled) {
 				logger.Error("Analytics consumer stopped with error", slog.Any("error", err))
 			} else {
 				logger.Info("Analytics consumer stopped gracefully")
@@ -96,8 +98,8 @@ func (app *Application) start() error {
 	app.Run = true
 	logger.Info("Application started successfully")
 	logger.Info("Analytics Exporter Running",
-		slog.String("consumer_group", getEnv("KAFKA_CONSUMER_GROUP", "analytics-exporters")),
-		slog.String("topic", getEnv("KAFKA_TOPIC", "billing-processed")),
+		slog.String("consumer_group", config.GetEnv("KAFKA_CONSUMER_GROUP", "analytics-exporters")),
+		slog.String("topic", config.GetEnv("KAFKA_TOPIC", "billing-processed")),
 		slog.String("flow", "Read billing-processed events from Kafka -> Export to Clickhouse (simulated)"),
 	)
 
@@ -156,23 +158,4 @@ func main() {
 	}
 
 	app.waitForShutdown()
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvAsInt(key string, defaultValue int) int {
-	valueStr := os.Getenv(key)
-	if valueStr == "" {
-		return defaultValue
-	}
-	var value int
-	if _, err := fmt.Sscanf(valueStr, "%d", &value); err != nil {
-		return defaultValue
-	}
-	return value
 }

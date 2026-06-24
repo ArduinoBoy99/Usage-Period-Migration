@@ -11,8 +11,6 @@ import (
 	"usage-period-migration/pkg/repository/sql"
 )
 
-var logger *slog.Logger
-
 const (
 	postgresBatchSize     int    = 1000
 	eventTypeBillingChunk string = "billing_chunk_created"
@@ -26,10 +24,15 @@ type OutboxPublisherService interface {
 type outboxPublisherService struct {
 	db            *sql.PostgresDB
 	kafkaProducer *kafka.KafkaConnector
+	logger        *slog.Logger
 }
 
-func NewOutboxPublisherService(db *sql.PostgresDB, kafkaProducer *kafka.KafkaConnector) OutboxPublisherService {
-	return &outboxPublisherService{db: db, kafkaProducer: kafkaProducer}
+func NewOutboxPublisherService(db *sql.PostgresDB, kafkaProducer *kafka.KafkaConnector, logger *slog.Logger) OutboxPublisherService {
+	return &outboxPublisherService{
+		db:            db,
+		kafkaProducer: kafkaProducer,
+		logger:        logger,
+	}
 }
 
 func (s *outboxPublisherService) validateBillingChunk(chunk *kafka.BillingChunkCreated) error {
@@ -52,7 +55,7 @@ func (s *outboxPublisherService) StartWorkers(
 	pollInterval time.Duration,
 	batchSize int,
 ) {
-	logger.Info("Starting leasing workers",
+	s.logger.Info("Starting leasing workers",
 		slog.Int("num_workers", numWorkers),
 		slog.Int("batch_size", batchSize),
 		slog.Duration("poll_interval", pollInterval))
@@ -69,19 +72,19 @@ func (s *outboxPublisherService) workerLoop(
 	batchSize int,
 	pollInterval time.Duration,
 ) {
-	logger.Info("Worker started", slog.Int("worker_id", workerID))
+	s.logger.Info("Worker started", slog.Int("worker_id", workerID))
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("Worker stopping", slog.Int("worker_id", workerID))
+			s.logger.Info("Worker stopping", slog.Int("worker_id", workerID))
 			return
 		default:
 		}
 
 		processed, err := s.processOnce(ctx, workerID, batchSize)
 		if err != nil {
-			logger.Error("Worker error",
+			s.logger.Error("Worker error",
 				slog.Int("worker_id", workerID),
 				slog.Any("error", err))
 		}
@@ -109,7 +112,7 @@ func (s *outboxPublisherService) processOnce(
 		return 0, nil
 	}
 
-	logger.Info("Worker leased events",
+	s.logger.Info("Worker leased events",
 		slog.Int("worker_id", workerID),
 		slog.Int("event_count", len(events)))
 
@@ -138,7 +141,7 @@ func (s *outboxPublisherService) processOnce(
 			continue
 		}
 		if err := s.kafkaProducer.ProduceBillingChunk(ctx, &billingChunk); err != nil {
-			logger.Error("Worker publish error",
+			s.logger.Error("Worker publish error",
 				slog.Int("worker_id", workerID),
 				slog.Any("error", err))
 			failureCount++
@@ -161,7 +164,7 @@ func (s *outboxPublisherService) processOnce(
 		return 0, fmt.Errorf("worker %d commit failed: %w", workerID, err)
 	}
 
-	logger.Info("Worker processing complete",
+	s.logger.Info("Worker processing complete",
 		slog.Int("worker_id", workerID),
 		slog.Int("success_count", len(successIDs)),
 		slog.Int("failure_count", failureCount))

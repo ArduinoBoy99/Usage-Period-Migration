@@ -33,28 +33,28 @@ const (
 )
 
 type UsageSessions struct {
-	ID             string `json:"id" column:"id"`
-	SandboxID      string `json:"sandboxId" gorm:"column:sandboxId"`
-	OrganizationID string `json:"organizationId" gorm:"column:organizationId"`
+	ID             string `json:"id" db:"id"`
+	SandboxID      string `json:"sandboxId" db:"sandbox_id"`
+	OrganizationID string `json:"organizationId" db:"organization_id"`
 
-	StartAt time.Time  `json:"startAt" gorm:"column:startAt"`
-	EndAt   *time.Time `json:"endAt" gorm:"column:endAt"`
+	StartAt time.Time  `json:"startAt" db:"start_at"`
+	EndAt   *time.Time `json:"endAt" db:"end_at"`
 
 	Status UsageSessionStatus `json:"status" column:"status"`
 
-	LastBilledAt    *time.Time    `db:"lastBilledAt"`
-	BillingStatus   BillingStatus `json:"billingStatus" column:"billingStatus"`
+	LastBilledAt    *time.Time    `db:"last_billed_at"`
+	BillingStatus   BillingStatus `json:"billingStatus" db:"billing_status"`
 	BillingSequence int64         `db:"billingSequence"`
 
-	CPU    *float64 `json:"cpu" gorm:"column:cpu"`
-	GPU    *float64 `json:"gpu" gorm:"column:gpu"`
-	RamGB  *float64 `json:"ramGB" gorm:"column:ramGB"`
-	DiskGB *float64 `json:"diskGB" gorm:"column:diskGB"`
-	Region string   `json:"region" gorm:"column:region"`
+	CPU    *float64 `json:"cpu" db:"cpu"`
+	GPU    *float64 `json:"gpu" db:"gpu"`
+	RamGB  *float64 `json:"ramGB" db:"ram_gb"`
+	DiskGB *float64 `json:"diskGB" db:"disk_gb"`
+	Region string   `json:"region" db:"region"`
 
-	SandboxClass SandboxClass `json:"sandboxClass" gorm:"column:sandboxClass;default:container"`
+	SandboxClass SandboxClass `json:"sandboxClass" db:"sandbox_class"`
 
-	RecordedAt time.Time `json:"recordedAt" gorm:"column:recordedAt;default:CURRENT_TIMESTAMP"`
+	RecordedAt time.Time `json:"recordedAt" db:"recorded_at"`
 }
 
 type OutboxEvent struct {

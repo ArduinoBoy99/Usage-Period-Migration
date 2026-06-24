@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"usage-period-migration/pkg/config"
 
 	"usage-period-migration/billing-processor/service/billing"
 	"usage-period-migration/pkg/repository/kafka"
@@ -35,12 +37,12 @@ type Application struct {
 
 func (app *Application) initDatabase() error {
 	dbConfig := sql.Config{
-		Host:     getEnv("DB_HOST", "localhost"),
-		Port:     getEnvAsInt("DB_PORT", 5432),
-		User:     getEnv("DB_USER", "postgres"),
-		Password: getEnv("DB_PASSWORD", "password"),
-		DBName:   getEnv("DB_NAME", "usage_db"),
-		SSLMode:  getEnv("DB_SSL_MODE", "disable"),
+		Host:     config.GetEnv("DB_HOST", "localhost"),
+		Port:     config.GetEnvAsInt("DB_PORT", 5432),
+		User:     config.GetEnv("DB_USER", "postgres"),
+		Password: config.GetEnv("DB_PASSWORD", "password"),
+		DBName:   config.GetEnv("DB_NAME", "usage_db"),
+		SSLMode:  config.GetEnv("DB_SSL_MODE", "disable"),
 	}
 
 	logger.Info("Connecting to database",
@@ -57,28 +59,23 @@ func (app *Application) initDatabase() error {
 	app.db = db
 	logger.Info("Database connection established")
 
-	if err := app.db.InitializeSchema(context.Background()); err != nil {
-		logger.Error("Failed to initialize database schema", slog.Any("error", err))
-		os.Exit(1)
-	}
-
 	return nil
 }
 
 func (app *Application) initKafka() error {
-	brokersStr := getEnv("KAFKA_BROKERS", "localhost:9092")
+	brokersStr := config.GetEnv("KAFKA_BROKERS", "kafka:9092")
 	brokers := strings.Split(brokersStr, ",")
 
 	kafkaConfig := kafka.Config{
 		Brokers:           brokers,
-		Topic:             getEnv("KAFKA_TOPIC", "events"),
-		ConsumerGroup:     getEnv("KAFKA_CONSUMER_GROUP", "billing-processors"),
-		MaxAttempts:       getEnvAsInt("KAFKA_MAX_ATTEMPTS", 3),
-		MinBytes:          getEnvAsInt("KAFKA_MIN_BYTES", 1),
-		MaxBytes:          getEnvAsInt("KAFKA_MAX_BYTES", 10485760),
-		CommitInterval:    time.Duration(getEnvAsInt("KAFKA_COMMIT_INTERVAL_MS", 1000)) * time.Millisecond,
-		SessionTimeout:    time.Duration(getEnvAsInt("KAFKA_SESSION_TIMEOUT_MS", 10000)) * time.Millisecond,
-		HeartbeatInterval: time.Duration(getEnvAsInt("KAFKA_HEARTBEAT_INTERVAL_MS", 3000)) * time.Millisecond,
+		Topic:             config.GetEnv("KAFKA_TOPIC", "events"),
+		ConsumerGroup:     config.GetEnv("KAFKA_CONSUMER_GROUP", "billing-processors"),
+		MaxAttempts:       config.GetEnvAsInt("KAFKA_MAX_ATTEMPTS", 3),
+		MinBytes:          config.GetEnvAsInt("KAFKA_MIN_BYTES", 1),
+		MaxBytes:          config.GetEnvAsInt("KAFKA_MAX_BYTES", 10485760),
+		CommitInterval:    time.Duration(config.GetEnvAsInt("KAFKA_COMMIT_INTERVAL_MS", 1000)) * time.Millisecond,
+		SessionTimeout:    time.Duration(config.GetEnvAsInt("KAFKA_SESSION_TIMEOUT_MS", 10000)) * time.Millisecond,
+		HeartbeatInterval: time.Duration(config.GetEnvAsInt("KAFKA_HEARTBEAT_INTERVAL_MS", 3000)) * time.Millisecond,
 	}
 
 	logger.Info("Connecting to Kafka brokers", slog.Any("brokers", brokers))
@@ -97,7 +94,7 @@ func (app *Application) initKafka() error {
 }
 
 func (app *Application) initServices() {
-	app.billingService = billing.NewService(app.db, app.kafkaConnector)
+	app.billingService = billing.NewService(app.db, app.kafkaConnector, logger)
 	logger.Info("Billing service initialized")
 }
 
@@ -108,7 +105,7 @@ func (app *Application) startBillingConsumer() {
 		logger.Info("Starting billing consumer")
 
 		if err := app.billingService.StartConsumer(app.rootCtx); err != nil {
-			if err != context.Canceled {
+			if !errors.Is(err, context.Canceled) {
 				logger.Error("Billing consumer stopped with error", slog.Any("error", err))
 			} else {
 				logger.Info("Billing consumer stopped gracefully")
@@ -136,8 +133,8 @@ func (app *Application) start() error {
 	app.Run = true
 	logger.Info("Application started successfully")
 	logger.Info("Billing Processor Running",
-		slog.String("consumer_group", getEnv("KAFKA_CONSUMER_GROUP", "billing-processors")),
-		slog.String("topic", getEnv("KAFKA_TOPIC", "events")))
+		slog.String("consumer_group", config.GetEnv("KAFKA_CONSUMER_GROUP", "billing-processors")),
+		slog.String("topic", config.GetEnv("KAFKA_TOPIC", "events")))
 	logger.Info("Processing billing chunks with 5-step flow")
 	logger.Info("  1. Read Kafka event")
 	logger.Info("  2. Idempotency check (dedupe by event_id)")
@@ -208,23 +205,4 @@ func main() {
 	}
 
 	app.waitForShutdown()
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvAsInt(key string, defaultValue int) int {
-	valueStr := os.Getenv(key)
-	if valueStr == "" {
-		return defaultValue
-	}
-	var value int
-	if _, err := fmt.Sscanf(valueStr, "%d", &value); err != nil {
-		return defaultValue
-	}
-	return value
 }

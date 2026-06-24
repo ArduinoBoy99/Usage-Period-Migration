@@ -12,7 +12,7 @@ import (
 func ExampleProducer() {
 	// Create Kafka connector
 	connector, err := NewKafkaConnector(Config{
-		Brokers: []string{"localhost:9092", "localhost:9093", "localhost:9094"},
+		Brokers: []string{"kafka:9092", "localhost:9093", "localhost:9094"},
 		Topic:   TopicUsageBillingChunks,
 	})
 	if err != nil {
@@ -92,7 +92,7 @@ func ExampleProducer() {
 func ExampleConsumer() {
 	// Create Kafka connector
 	connector, err := NewKafkaConnector(Config{
-		Brokers:       []string{"localhost:9092", "localhost:9093", "localhost:9094"},
+		Brokers:       []string{"kafka:9092", "localhost:9093", "localhost:9094"},
 		Topic:         TopicUsageBillingChunks,
 		ConsumerGroup: "outbox-processor-group",
 	})
@@ -135,7 +135,7 @@ func ExampleConsumer() {
 // ExampleConsumerWithManualCommit demonstrates manual message commit
 func ExampleConsumerWithManualCommit() {
 	connector, err := NewKafkaConnector(Config{
-		Brokers:       []string{"localhost:9092"},
+		Brokers:       []string{"kafka:9092"},
 		Topic:         TopicUsageBillingChunks,
 		ConsumerGroup: "manual-commit-group",
 	})
@@ -188,7 +188,7 @@ func ExampleIntegratedWorkflow() {
 	// Producer side - simulates outbox service
 	go func() {
 		producerConnector, err := NewKafkaConnector(Config{
-			Brokers: []string{"localhost:9092"},
+			Brokers: []string{"kafka:9092"},
 			Topic:   TopicUsageBillingChunks,
 		})
 		if err != nil {
@@ -231,7 +231,7 @@ func ExampleIntegratedWorkflow() {
 
 	// Consumer side - simulates outbox processor
 	consumerConnector, err := NewKafkaConnector(Config{
-		Brokers:       []string{"localhost:9092"},
+		Brokers:       []string{"kafka:9092"},
 		Topic:         TopicUsageBillingChunks,
 		ConsumerGroup: "outbox-processor",
 	})

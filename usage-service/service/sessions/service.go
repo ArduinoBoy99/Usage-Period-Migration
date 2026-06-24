@@ -190,12 +190,18 @@ func (s *sessionService) FinishSession(ctx context.Context, sessionID string) er
 	// Generate unique event ID
 	eventID := uuid.New().String()
 
+	from := time.Time{}
+
+	if session.LastBilledAt != nil {
+		from = *session.LastBilledAt
+	}
+
 	// Create payload
 	payload := entity.BillingChunkPayload{
 		EventID:        eventID,
 		SessionID:      session.ID,
 		Sequence:       newSequence,
-		From:           *session.LastBilledAt,
+		From:           from,
 		To:             now,
 		CPU:            session.CPU,
 		GPU:            session.GPU,

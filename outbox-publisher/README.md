@@ -35,7 +35,7 @@ The Outbox Publisher Service:
 | `DB_PASSWORD` | PostgreSQL password | `password` |
 | `DB_NAME` | PostgreSQL database name | `usage_db` |
 | `DB_SSL_MODE` | PostgreSQL SSL mode | `disable` |
-| `KAFKA_BROKERS` | Kafka broker addresses (comma-separated) | `localhost:9092` |
+| `KAFKA_BROKERS` | Kafka broker addresses (comma-separated) | `kafka:9092` |
 | `KAFKA_CONSUMER_GROUP` | Kafka consumer group ID | `usage-billing-processor` |
 | `KAFKA_MAX_ATTEMPTS` | Maximum Kafka retry attempts | `3` |
 | `POLLING_INTERVAL_SECONDS` | How often to poll for new events | `5` |
@@ -53,7 +53,7 @@ DB_NAME=usage_db
 DB_SSL_MODE=disable
 
 # Kafka Configuration
-KAFKA_BROKERS=localhost:9092,localhost:9093,localhost:9094
+KAFKA_BROKERS=kafka:9092,localhost:9093,localhost:9094
 KAFKA_CONSUMER_GROUP=usage-outbox-processor
 KAFKA_MAX_ATTEMPTS=3
 
@@ -72,7 +72,7 @@ export DB_HOST=localhost
 export DB_PORT=5432
 export DB_USER=postgres
 export DB_PASSWORD=password
-export KAFKA_BROKERS=localhost:9092
+export KAFKA_BROKERS=kafka:9092
 
 # Run the service
 cd outbox-publisher/cmd
