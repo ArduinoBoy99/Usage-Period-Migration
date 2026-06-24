@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,14 +12,13 @@ import (
 	"github.com/segmentio/kafka-go"
 
 	kafkaRepo "usage-period-migration/pkg/repository/kafka"
-	"usage-period-migration/pkg/repository/sql"
+	repo "usage-period-migration/pkg/repository/sql"
 )
 
 const (
 	// Kafka configuration
-	TopicUsageBillingChunks = "events"
-	TopicBillingProcessed   = "billing-processed"
-	ConsumerGroup           = "billing-processors"
+	TopicBillingProcessed = "billing-processed"
+	ConsumerGroup         = "billing-processors"
 )
 
 // Service defines the interface for the Billing Processor service
@@ -30,7 +30,7 @@ type Service interface {
 	ProcessBillingChunk(ctx context.Context, event *kafkaRepo.BillingChunkCreated) error
 
 	// CheckIdempotency checks if event was already processed
-	CheckIdempotency(ctx context.Context, eventID string) (bool, error)
+	CheckIdempotency(ctx context.Context, tx *sql.Tx, eventID string) (bool, error)
 
 	// BuildMetronomePayload builds the Metronome API payload
 	BuildMetronomePayload(event *kafkaRepo.BillingChunkCreated) (*MetronomePayload, error)
@@ -62,7 +62,7 @@ type BillingProcessedEvent struct {
 }
 
 type billingService struct {
-	db             *sql.PostgresDB
+	db             *repo.PostgresDB
 	kafkaConnector *kafkaRepo.KafkaConnector
 	consumer       *kafka.Reader
 	producer       *kafka.Writer
@@ -70,7 +70,7 @@ type billingService struct {
 }
 
 // NewService creates a new Billing Processor service
-func NewService(db *sql.PostgresDB, kafkaConnector *kafkaRepo.KafkaConnector, logger *slog.Logger) Service {
+func NewService(db *repo.PostgresDB, kafkaConnector *kafkaRepo.KafkaConnector, logger *slog.Logger) Service {
 	return &billingService{
 		db:             db,
 		kafkaConnector: kafkaConnector,
@@ -88,7 +88,7 @@ func (s *billingService) StartConsumer(ctx context.Context) error {
 	// Create Kafka reader (consumer)
 	s.consumer = kafka.NewReader(kafka.ReaderConfig{
 		Brokers:        brokers,
-		Topic:          TopicUsageBillingChunks,
+		Topic:          kafkaRepo.TopicUsageBillingChunks,
 		GroupID:        ConsumerGroup,
 		MinBytes:       1,
 		MaxBytes:       10e6, // 10MB
@@ -111,7 +111,7 @@ func (s *billingService) StartConsumer(ctx context.Context) error {
 	defer s.producer.Close()
 
 	s.logger.Info("Kafka consumer started",
-		slog.String("topic", TopicUsageBillingChunks),
+		slog.String("topic", kafkaRepo.TopicUsageBillingChunks),
 		slog.String("consumer_group", ConsumerGroup))
 
 	// Consume messages
@@ -174,46 +174,36 @@ func (s *billingService) processMessage(ctx context.Context, msg kafka.Message) 
 
 // ProcessBillingChunk processes a single billing chunk event (Steps 2-5)
 func (s *billingService) ProcessBillingChunk(ctx context.Context, event *kafkaRepo.BillingChunkCreated) error {
-	// Step 2: Idempotency Check (dedupe by event_id)
-	s.logger.Info("Idempotency check for event",
-		slog.String("step", "2"),
-		slog.String("event_id", event.EventID))
-
-	processed, err := s.CheckIdempotency(ctx, event.EventID)
+	tx, err := s.db.BeginTx(ctx)
 	if err != nil {
-		return fmt.Errorf("idempotency check failed: %w", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	transactionID := fmt.Sprintf("%s:%d", event.SessionID, event.Sequence)
+
+	// Step 1: Check if already processed
+	alreadyProcessed, err := s.CheckIdempotency(ctx, tx, event.EventID)
+	if err != nil {
+		return fmt.Errorf("failed to check idempotency: %w", err)
 	}
 
-	if processed {
-		s.logger.Info("Event already processed, skipping",
-			slog.String("event_id", event.EventID))
+	if alreadyProcessed {
 		return nil
 	}
 
-	// Step 3: Build Metronome Payload
-	s.logger.Info("Building Metronome payload",
-		slog.String("step", "3"),
-		slog.String("event_id", event.EventID))
-
+	// Step 2: Build Metronome Payload
 	metronomePayload, err := s.BuildMetronomePayload(event)
 	if err != nil {
 		return fmt.Errorf("failed to build Metronome payload: %w", err)
 	}
 
-	// Step 4: Send to Metronome
-	s.logger.Info("Sending to Metronome",
-		slog.String("step", "4"),
-		slog.String("transaction_id", metronomePayload.TransactionID))
-
+	// Step 3: Send to Metronome (idempotency key = transaction_id makes retries safe)
 	if err := s.SendToMetronome(ctx, metronomePayload); err != nil {
 		return fmt.Errorf("failed to send to Metronome: %w", err)
 	}
 
-	// Step 5: Publish BillingProcessed Event
-	s.logger.Info("Publishing billing processed event",
-		slog.String("step", "5"),
-		slog.String("event_id", event.EventID))
-
+	// Step 4: Publish BillingProcessed event
 	billingProcessedEvent := &BillingProcessedEvent{
 		EventID:        event.EventID,
 		SessionID:      event.SessionID,
@@ -222,21 +212,30 @@ func (s *billingService) ProcessBillingChunk(ctx context.Context, event *kafkaRe
 		MetronomeID:    metronomePayload.TransactionID,
 		OrganizationID: event.OrganizationID,
 	}
-
 	if err := s.PublishBillingProcessed(ctx, billingProcessedEvent); err != nil {
 		return fmt.Errorf("failed to publish billing processed event: %w", err)
 	}
 
-	// Record as processed in database
-	processedEvent := &sql.ProcessedBillingEvent{
-		EventID:     event.EventID,
-		ProcessedAt: time.Now(),
+	// Step 5: Claim the event. The UNIQUE(event_id) constraint is the dedupe gate;
+	// a unique violation means another delivery already processed it.
+	processedEvent := &repo.ProcessedBillingEvent{
+		EventID:       event.EventID,
+		SessionID:     event.SessionID,
+		Sequence:      event.Sequence,
+		TransactionID: transactionID,
+		ProcessedAt:   time.Now(),
+	}
+	if err := s.db.InsertProcessedBillingEventTx(ctx, tx, processedEvent); err != nil {
+		if repo.IsUniqueViolation(err) {
+			s.logger.Info("Event already processed, skipping",
+				slog.String("event_id", event.EventID))
+			return nil // commit offset, nothing more to do
+		}
+		return fmt.Errorf("failed to claim event: %w", err)
 	}
 
-	if err := s.db.InsertProcessedBillingEvent(ctx, processedEvent); err != nil {
-		s.logger.Warn("Failed to record processed event",
-			slog.Any("error", err))
-		// Don't fail the entire process if we can't record it
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit: %w", err)
 	}
 
 	s.logger.Info("Successfully completed billing",
@@ -245,8 +244,8 @@ func (s *billingService) ProcessBillingChunk(ctx context.Context, event *kafkaRe
 }
 
 // CheckIdempotency checks if event was already processed (Step 2)
-func (s *billingService) CheckIdempotency(ctx context.Context, eventID string) (bool, error) {
-	exists, err := s.db.ProcessedBillingEventExists(ctx, eventID)
+func (s *billingService) CheckIdempotency(ctx context.Context, tx *sql.Tx, eventID string) (bool, error) {
+	exists, err := s.db.ProcessedBillingEventExistsTx(ctx, tx, eventID)
 	if err != nil {
 		return false, fmt.Errorf("failed to check processed event: %w", err)
 	}
@@ -373,7 +372,7 @@ func (s *billingService) GetProcessingStats(ctx context.Context) (map[string]int
 	stats := map[string]interface{}{
 		"total_processed": totalProcessed,
 		"consumer_group":  ConsumerGroup,
-		"topic":           TopicUsageBillingChunks,
+		"topic":           kafkaRepo.TopicUsageBillingChunks,
 	}
 
 	return stats, nil

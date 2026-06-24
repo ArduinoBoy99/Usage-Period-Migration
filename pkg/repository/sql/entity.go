@@ -1,7 +1,6 @@
 package sql
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -57,6 +56,28 @@ type UsageSessions struct {
 	RecordedAt time.Time `json:"recordedAt" db:"recorded_at"`
 }
 
+type BillingChunkCreated struct {
+	EventID string `json:"event_id"`
+
+	SessionID      string `json:"session_id"`
+	SandboxID      string `json:"sandbox_id"`
+	OrganizationID string `json:"organization_id"`
+
+	Sequence int64 `json:"sequence"`
+
+	From time.Time `json:"from"`
+	To   time.Time `json:"to"`
+
+	CPU    *float64 `json:"cpu,omitempty"`
+	GPU    *float64 `json:"gpu,omitempty"`
+	RAMGB  *float64 `json:"ram_gb,omitempty"`
+	DiskGB *float64 `json:"disk_gb,omitempty"`
+
+	Region       string `json:"region"`
+	RegionType   string `json:"region_type"`
+	SandboxClass string `json:"sandbox_class"`
+}
+
 type OutboxEvent struct {
 	ID        int64  `db:"id"`
 	EventID   string `db:"event_id"` // unique — BillingChunkCreated.EventID
@@ -65,7 +86,7 @@ type OutboxEvent struct {
 	SessionID string `db:"session_id"`
 	Sequence  int64  `db:"sequence"` // outbox sequence number
 
-	Payload json.RawMessage `db:"payload"`
+	Payload []byte `db:"payload"`
 
 	CreatedAt   time.Time  `db:"created_at"`
 	PublishedAt *time.Time `db:"published_at"`

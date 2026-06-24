@@ -21,6 +21,7 @@ var logger *slog.Logger
 const (
 	test_outbox_interval time.Duration = time.Duration(time.Minute * 2) // 2 minute for testing
 	outbox_interval      time.Duration = time.Duration(time.Hour * 1)   // 1 minute for production
+	duplicate_interval   time.Duration = time.Minute * 3                // re-emit duplicates every 3 minutes for testing
 )
 
 type Application struct {
@@ -112,9 +113,9 @@ func (app *Application) startPeriodicSessionFinisher() {
 	app.wg.Add(1)
 	go func() {
 		defer app.wg.Done()
-		logger.Info("Starting periodic session finisher", slog.String("interval", "every 2 minutes"))
+		logger.Info("Starting periodic session finisher", slog.String("interval", "every 5 minutes"))
 
-		ticker := time.NewTicker(2 * time.Minute)
+		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 
 		time.Sleep(1 * time.Minute)
@@ -126,6 +127,22 @@ func (app *Application) startPeriodicSessionFinisher() {
 				return
 			case <-ticker.C:
 				app.finishActiveSessions()
+			}
+		}
+	}()
+}
+
+func (app *Application) startDuplicateInjector() {
+	app.wg.Add(1)
+	go func() {
+		defer app.wg.Done()
+		logger.Info("Starting duplicate injector", slog.Duration("interval", duplicate_interval))
+
+		if err := app.outboxService.StartDuplicateInjector(app.rootCtx, duplicate_interval); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				logger.Error("Duplicate injector stopped with error", slog.Any("error", err))
+			} else {
+				logger.Info("Duplicate injector stopped gracefully")
 			}
 		}
 	}()
@@ -177,6 +194,7 @@ func (app *Application) start() error {
 	app.startPeriodicSessionCreator()
 	app.startPeriodicSessionFinisher()
 	app.startOutboxScanner()
+	app.startDuplicateInjector()
 
 	app.Run = true
 	logger.Info("Application started successfully")

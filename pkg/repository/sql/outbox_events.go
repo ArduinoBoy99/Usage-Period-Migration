@@ -253,11 +253,11 @@ func (p *PostgresDB) BatchMarkOutboxEventsPublishedTx(ctx context.Context, tx *s
 	return nil
 }
 
-// MarkIfNotProcessed checks if an event was already processed and marks it if not.
+// CheckIfProcessed checks if an event was already processed and marks it if not.
 // Returns true if successfully marked (not yet processed), false if already processed.
-func (p *PostgresDB) MarkIfNotProcessed(ctx context.Context, eventID string) (bool, error) {
+func (p *PostgresDB) CheckIfProcessed(ctx context.Context, tx *sql.Tx, eventID string) (bool, error) {
 	// Use the processed_events table for idempotency tracking
-	exists, err := p.ProcessedOutboxEventExists(ctx, eventID)
+	exists, err := p.ProcessedOutboxEventExistsTx(ctx, tx, eventID)
 	if err != nil {
 		return false, err
 	}
@@ -269,14 +269,31 @@ func (p *PostgresDB) MarkIfNotProcessed(ctx context.Context, eventID string) (bo
 	return true, nil
 }
 
-// MarkProcessed marks an event as successfully processed in the processed_events table.
-// This records the successful completion of an event for idempotency.
-func (p *PostgresDB) MarkProcessed(ctx context.Context, eventID string, sessionID string, sequence int64) error {
-	processed := &ProcessedOutboxEvent{
-		EventID:     eventID,
-		SessionID:   sessionID,
-		Sequence:    sequence,
-		ProcessedAt: time.Now(),
+// ResetRandomPublishedOutboxEvents marks up to `limit` already-published events as
+// unpublished so they get re-published. Used to demonstrate idempotency via duplicates.
+// Returns the number of rows reset.
+func (p *PostgresDB) ResetRandomPublishedOutboxEvents(ctx context.Context, eventType string, limit int) (int64, error) {
+	query := `
+		UPDATE outbox_events
+		SET published_at = NULL
+		WHERE id IN (
+			SELECT id FROM outbox_events
+			WHERE published_at IS NOT NULL
+			  AND event_type = $1
+			ORDER BY random()
+			LIMIT $2
+		)
+	`
+
+	result, err := p.db.ExecContext(ctx, query, eventType, limit)
+	if err != nil {
+		return 0, fmt.Errorf("failed to reset published outbox events: %w", err)
 	}
-	return p.InsertProcessedOutboxEvent(ctx, processed)
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	return rowsAffected, nil
 }

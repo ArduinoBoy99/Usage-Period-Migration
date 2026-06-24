@@ -36,14 +36,12 @@ func NewOutboxPublisherService(db *sql.PostgresDB, kafkaProducer *kafka.KafkaCon
 }
 
 func (s *outboxPublisherService) validateBillingChunk(chunk *kafka.BillingChunkCreated) error {
-	if chunk.EventID == "" || chunk.SessionID == "" || chunk.SandboxID == "" || chunk.OrganizationID == "" {
+	if chunk.EventID == "" || chunk.SessionID == "" || chunk.SandboxID == "" {
 		return fmt.Errorf("required fields missing")
 	}
-	if chunk.Sequence <= 0 || chunk.From.IsZero() || chunk.To.IsZero() {
-		return fmt.Errorf("invalid sequence or timestamps")
-	}
-	if chunk.To.Before(chunk.From) || chunk.Region == "" || chunk.SandboxClass == "" {
-		return fmt.Errorf("invalid time range or missing region/class")
+	if !chunk.To.After(chunk.From) {
+		return fmt.Errorf("invalid time range: To (%s) must be after From (%s)",
+			chunk.To.Format(time.RFC3339), chunk.From.Format(time.RFC3339))
 	}
 	return nil
 }
@@ -121,31 +119,64 @@ func (s *outboxPublisherService) processOnce(
 
 	for _, event := range events {
 		// Idempotency check
-		ok, err := s.db.MarkIfNotProcessed(ctx, event.EventID)
+		ok, err := s.db.CheckIfProcessed(ctx, tx, event.EventID)
 		if err != nil {
 			failureCount++
 			continue
 		}
 		if !ok {
+			// Already processed by a prior run — mark published in-tx so it isn't re-leased.
+			successIDs = append(successIDs, event.ID)
 			continue // Already processed
 		}
 
 		// Validate and publish
-		var billingChunk kafka.BillingChunkCreated
-		if err := json.Unmarshal(event.Payload, &billingChunk); err != nil {
+		var eventPayload sql.BillingChunkCreated
+
+		if err := json.Unmarshal(event.Payload, &eventPayload); err != nil {
+			s.logger.Warn("Invalid payload json",
+				slog.String("event_id", event.EventID),
+				slog.String("payload", string(event.Payload)),
+				slog.String("error", err.Error()))
+			continue
+		}
+
+		kafkaPayload := BillingChunkToKafkaPayload(eventPayload)
+
+		s.logger.Info(
+			"decoded chunk",
+			slog.String("event_id", kafkaPayload.EventID),
+			slog.String("session_id", kafkaPayload.SessionID),
+			slog.String("sandbox_id", kafkaPayload.SandboxID),
+		)
+
+		if err := s.validateBillingChunk(kafkaPayload); err != nil {
+			s.logger.Error("Worker validation error",
+				slog.Int("worker_id", workerID),
+				slog.Any("error", err))
 			failureCount++
 			continue
 		}
-		if err := s.validateBillingChunk(&billingChunk); err != nil {
-			failureCount++
-			continue
-		}
-		if err := s.kafkaProducer.ProduceBillingChunk(ctx, &billingChunk); err != nil {
+		if err := s.kafkaProducer.ProduceBillingChunk(ctx, kafkaPayload); err != nil {
 			s.logger.Error("Worker publish error",
 				slog.Int("worker_id", workerID),
 				slog.Any("error", err))
 			failureCount++
 			continue
+		}
+
+		// mark processed for idempotency, atomically with the publish commit
+		if err := s.db.InsertProcessedOutboxEventTx(ctx, tx, &sql.ProcessedOutboxEvent{
+			EventID:     event.EventID,
+			SessionID:   event.SessionID,
+			Sequence:    event.Sequence,
+			ProcessedAt: time.Now(),
+		}); err != nil {
+			s.logger.Error("Worker mark-processed error",
+				slog.Int("worker_id", workerID),
+				slog.String("event_id", event.EventID),
+				slog.Any("error", err))
+			return len(successIDs), fmt.Errorf("worker %d mark processed failed: %w", workerID, err)
 		}
 
 		successIDs = append(successIDs, event.ID)
@@ -177,4 +208,23 @@ func chunkIDs(ids []int64, size int) [][]int64 {
 		ids, chunks = ids[size:], append(chunks, ids[:size])
 	}
 	return append(chunks, ids)
+}
+
+func BillingChunkToKafkaPayload(created sql.BillingChunkCreated) *kafka.BillingChunkCreated {
+	return &kafka.BillingChunkCreated{
+		EventID:        created.EventID,
+		SessionID:      created.SessionID,
+		SandboxID:      created.SandboxID,
+		OrganizationID: created.OrganizationID,
+		Sequence:       created.Sequence,
+		From:           created.From,
+		To:             created.To,
+		CPU:            created.CPU,
+		GPU:            created.GPU,
+		RAMGB:          created.RAMGB,
+		DiskGB:         created.DiskGB,
+		Region:         created.Region,
+		RegionType:     created.RegionType,
+		SandboxClass:   created.SandboxClass,
+	}
 }

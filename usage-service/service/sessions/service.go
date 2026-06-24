@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"math/rand"
 	"time"
-	"usage-period-migration/pkg/entity"
-
 	repo "usage-period-migration/pkg/repository/sql"
 
 	"github.com/google/uuid"
@@ -197,15 +195,16 @@ func (s *sessionService) FinishSession(ctx context.Context, sessionID string) er
 	}
 
 	// Create payload
-	payload := entity.BillingChunkPayload{
+	payload := repo.BillingChunkCreated{
 		EventID:        eventID,
 		SessionID:      session.ID,
+		SandboxID:      session.SandboxID,
 		Sequence:       newSequence,
 		From:           from,
 		To:             now,
 		CPU:            session.CPU,
 		GPU:            session.GPU,
-		RamGB:          session.RamGB,
+		RAMGB:          session.RamGB,
 		DiskGB:         session.DiskGB,
 		Region:         session.Region,
 		SandboxClass:   string(session.SandboxClass),
@@ -214,16 +213,16 @@ func (s *sessionService) FinishSession(ctx context.Context, sessionID string) er
 
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
+		return fmt.Errorf("failed to marshal billing chunk: %w", err)
 	}
 
 	// Create outbox event
 	outboxEvent := &repo.OutboxEvent{
 		EventID:     eventID,
-		EventType:   "events",
+		EventType:   "billing_chunk_created",
 		SessionID:   session.ID,
 		Sequence:    newSequence,
-		Payload:     payloadBytes, // ADD THIS
+		Payload:     payloadBytes,
 		CreatedAt:   time.Now(),
 		PublishedAt: nil,
 		RetryCount:  0,

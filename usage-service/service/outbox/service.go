@@ -7,17 +7,16 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
-
-	"usage-period-migration/pkg/entity"
 	repo "usage-period-migration/pkg/repository/sql"
 
 	"github.com/google/uuid"
 )
 
 const (
-	EventTypeBillingChunk = "events"
+	EventTypeBillingChunk = "billing_chunk_created"
 	ScanIntervalMinutes   = 1
 	BatchSize             = 1000
+	DuplicateBatchSize    = 15
 )
 
 // Service defines the interface for the Outbox service
@@ -30,6 +29,9 @@ type Service interface {
 
 	// CreateOutboxEvent creates an outbox billing chunk event for a session
 	CreateOutboxEvent(ctx context.Context, session *repo.UsageSessions) error
+
+	// StartDuplicateInjector periodically re-publishes already-sent events to demo idempotency
+	StartDuplicateInjector(ctx context.Context, interval time.Duration) error
 }
 
 // OutboxRepository defines the interface for outbox repository operations
@@ -38,6 +40,7 @@ type OutboxRepository interface {
 	GetUnbilledUsageSessionsAfterCursor(ctx context.Context, lastID string, limit int, interval time.Duration) ([]*repo.UsageSessions, error)
 	InsertOutboxEventTx(ctx context.Context, tx *sql.Tx, event *repo.OutboxEvent) error
 	BeginTx(ctx context.Context) (*sql.Tx, error)
+	ResetRandomPublishedOutboxEvents(ctx context.Context, eventType string, limit int) (int64, error)
 }
 
 type outboxService struct {
@@ -161,15 +164,16 @@ func (s *outboxService) CreateOutboxEvent(ctx context.Context, session *repo.Usa
 	eventID := uuid.New().String()
 
 	// Create payload
-	payload := entity.BillingChunkPayload{
+	payload := repo.BillingChunkCreated{
 		EventID:        eventID,
 		SessionID:      session.ID,
+		SandboxID:      session.SandboxID,
 		Sequence:       newSequence,
 		From:           *from,
 		To:             to,
 		CPU:            session.CPU,
 		GPU:            session.GPU,
-		RamGB:          session.RamGB,
+		RAMGB:          session.RamGB,
 		DiskGB:         session.DiskGB,
 		Region:         session.Region,
 		SandboxClass:   string(session.SandboxClass),
@@ -199,11 +203,11 @@ func (s *outboxService) CreateOutboxEvent(ctx context.Context, session *repo.Usa
 		return fmt.Errorf("failed to insert outbox event: %w", err)
 	}
 
-	// Update session's lastBilledAt and billingSequence
+	// Update session's last_billed_at and billing_sequence
 	updateQuery := `
 		UPDATE usage_sessions
-		SET "lastBilledAt" = $2,
-		    "billingSequence" = $3
+		SET last_billed_at = $2,
+			billing_sequence = $3
 		WHERE id = $1
 	`
 
@@ -223,4 +227,32 @@ func (s *outboxService) CreateOutboxEvent(ctx context.Context, session *repo.Usa
 		slog.String("period", fmt.Sprintf("%s to %s", from.Format(time.RFC3339), to.Format(time.RFC3339))))
 
 	return nil
+}
+
+// StartDuplicateInjector periodically resets a small batch of already-published events
+// back to unpublished, so the outbox-publisher re-emits them. This demonstrates that
+// downstream consumers handle duplicate events idempotently (dedupe by event_id).
+func (s *outboxService) StartDuplicateInjector(ctx context.Context, interval time.Duration) error {
+	s.logger.Info("Starting outbox duplicate injector",
+		slog.Duration("interval", interval),
+		slog.Int("batch_size", DuplicateBatchSize))
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Info("Stopping outbox duplicate injector")
+			return ctx.Err()
+		case <-ticker.C:
+			n, err := s.db.ResetRandomPublishedOutboxEvents(ctx, EventTypeBillingChunk, DuplicateBatchSize)
+			if err != nil {
+				s.logger.Error("Failed to inject duplicate events", slog.Any("error", err))
+				continue
+			}
+			s.logger.Info("Injected duplicate events for idempotency demo",
+				slog.Int64("count", n))
+		}
+	}
 }

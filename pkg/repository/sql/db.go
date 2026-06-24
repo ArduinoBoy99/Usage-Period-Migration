@@ -3,10 +3,11 @@ package sql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 // PostgresDB wraps the database connection and provides methods for data access
@@ -50,6 +51,14 @@ func NewPostgresql(cfg Config) (*PostgresDB, error) {
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	return &PostgresDB{db: db}, nil
+}
+
+// IsUniqueViolation reports whether err is a Postgres unique-constraint violation.
+func IsUniqueViolation(err error) bool {
+	if pqErr, ok := errors.AsType[*pq.Error](err); ok {
+		return pqErr.Code == "23505"
+	}
+	return false
 }
 
 func (p *PostgresDB) Ping() error {

@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"log/slog"
 	"testing"
 	"time"
 
@@ -31,7 +32,9 @@ func TestBuildMetronomePayload(t *testing.T) {
 		},
 	}
 
-	s := &billingService{}
+	s := &billingService{
+		logger: slog.Default(),
+	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
