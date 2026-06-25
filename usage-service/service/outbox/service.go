@@ -34,8 +34,8 @@ type Service interface {
 	StartDuplicateInjector(ctx context.Context, interval time.Duration) error
 }
 
-// OutboxRepository defines the interface for outbox repository operations
-type OutboxRepository interface {
+// Repository defines the interface for outbox repository operations
+type Repository interface {
 	CountUnbilledUsageSessions(ctx context.Context, interval time.Duration) (int64, error)
 	GetUnbilledUsageSessionsAfterCursor(ctx context.Context, lastID string, limit int, interval time.Duration) ([]*repo.UsageSessions, error)
 	InsertOutboxEventTx(ctx context.Context, tx *sql.Tx, event *repo.OutboxEvent) error
@@ -44,13 +44,13 @@ type OutboxRepository interface {
 }
 
 type outboxService struct {
-	db       OutboxRepository
+	db       Repository
 	logger   *slog.Logger
 	interval time.Duration
 }
 
 // NewService creates a new Outbox service
-func NewService(db OutboxRepository, logger *slog.Logger, interval time.Duration) Service {
+func NewService(db Repository, logger *slog.Logger, interval time.Duration) Service {
 	return &outboxService{
 		db:       db,
 		logger:   logger,

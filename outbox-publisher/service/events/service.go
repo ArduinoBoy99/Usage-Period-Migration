@@ -2,13 +2,13 @@ package events
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
-
 	"usage-period-migration/pkg/repository/kafka"
-	"usage-period-migration/pkg/repository/sql"
+	repo "usage-period-migration/pkg/repository/sql"
 )
 
 const (
@@ -23,13 +23,21 @@ type OutboxPublisherService interface {
 	StartReplayer(ctx context.Context, interval time.Duration)
 }
 
+type Repository interface {
+	GetUnpublishedOutboxEvents(ctx context.Context, eventType string, limit int) ([]repo.OutboxEvent, *sql.Tx, error)
+	BatchMarkOutboxEventsPublishedTx(ctx context.Context, tx *sql.Tx, ids []int64) error
+	InsertProcessedOutboxEventTx(ctx context.Context, tx *sql.Tx, event *repo.ProcessedOutboxEvent) error
+	CheckIfProcessed(ctx context.Context, tx *sql.Tx, eventID string) (bool, error)
+	GetPublishedOutboxEvents(ctx context.Context, eventType string, limit int) ([]repo.OutboxEvent, error)
+}
+
 type outboxPublisherService struct {
-	db            *sql.PostgresDB
+	db            Repository
 	kafkaProducer *kafka.KafkaConnector
 	logger        *slog.Logger
 }
 
-func NewOutboxPublisherService(db *sql.PostgresDB, kafkaProducer *kafka.KafkaConnector, logger *slog.Logger) OutboxPublisherService {
+func NewOutboxPublisherService(db Repository, kafkaProducer *kafka.KafkaConnector, logger *slog.Logger) OutboxPublisherService {
 	return &outboxPublisherService{
 		db:            db,
 		kafkaProducer: kafkaProducer,
@@ -133,7 +141,7 @@ func (s *outboxPublisherService) processOnce(
 		}
 
 		// Validate and publish
-		var eventPayload sql.BillingChunkCreated
+		var eventPayload repo.BillingChunkCreated
 
 		if err := json.Unmarshal(event.Payload, &eventPayload); err != nil {
 			s.logger.Warn("Invalid payload json",
@@ -168,7 +176,7 @@ func (s *outboxPublisherService) processOnce(
 		}
 
 		// mark processed for idempotency, atomically with the publish commit
-		if err := s.db.InsertProcessedOutboxEventTx(ctx, tx, &sql.ProcessedOutboxEvent{
+		if err := s.db.InsertProcessedOutboxEventTx(ctx, tx, &repo.ProcessedOutboxEvent{
 			EventID:     event.EventID,
 			SessionID:   event.SessionID,
 			Sequence:    event.Sequence,
@@ -212,7 +220,7 @@ func chunkIDs(ids []int64, size int) [][]int64 {
 	return append(chunks, ids)
 }
 
-func BillingChunkToKafkaPayload(created sql.BillingChunkCreated) *kafka.BillingChunkCreated {
+func BillingChunkToKafkaPayload(created repo.BillingChunkCreated) *kafka.BillingChunkCreated {
 	return &kafka.BillingChunkCreated{
 		EventID:        created.EventID,
 		SessionID:      created.SessionID,
@@ -266,7 +274,7 @@ func (s *outboxPublisherService) replayOnce(ctx context.Context) error {
 
 	replayed := 0
 	for _, event := range events {
-		var payload sql.BillingChunkCreated
+		var payload repo.BillingChunkCreated
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			s.logger.Warn("Replay: invalid payload json",
 				slog.String("event_id", event.EventID),

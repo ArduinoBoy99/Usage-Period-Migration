@@ -47,7 +47,7 @@ func (p *PostgresDB) GetOutboxEvent(ctx context.Context, id int64) (*OutboxEvent
 
 // GetUnpublishedOutboxEvents retrieves all unpublished outbox events filtered by event type,
 // within a transaction using FOR UPDATE SKIP LOCKED for safe concurrent processing.
-func (p *PostgresDB) GetUnpublishedOutboxEvents(ctx context.Context, eventType string, limit int) ([]*OutboxEvent, *sql.Tx, error) {
+func (p *PostgresDB) GetUnpublishedOutboxEvents(ctx context.Context, eventType string, limit int) ([]OutboxEvent, *sql.Tx, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to begin transaction: %w", err)
@@ -71,9 +71,9 @@ func (p *PostgresDB) GetUnpublishedOutboxEvents(ctx context.Context, eventType s
 	}
 	defer rows.Close()
 
-	var events []*OutboxEvent
+	var events []OutboxEvent
 	for rows.Next() {
-		event := &OutboxEvent{}
+		event := OutboxEvent{}
 		err := rows.Scan(
 			&event.ID,
 			&event.EventID,
@@ -300,7 +300,7 @@ func (p *PostgresDB) ResetRandomPublishedOutboxEvents(ctx context.Context, event
 
 // GetPublishedOutboxEvents fetches up to `limit` already-published events of a type.
 // Read-only; used by the replayer to re-emit duplicates and exercise consumer idempotency.
-func (p *PostgresDB) GetPublishedOutboxEvents(ctx context.Context, eventType string, limit int) ([]*OutboxEvent, error) {
+func (p *PostgresDB) GetPublishedOutboxEvents(ctx context.Context, eventType string, limit int) ([]OutboxEvent, error) {
 	query := `
 		SELECT id, event_id, event_type, session_id, sequence, payload,
 		       created_at, published_at, retry_count, last_error
@@ -317,9 +317,9 @@ func (p *PostgresDB) GetPublishedOutboxEvents(ctx context.Context, eventType str
 	}
 	defer rows.Close()
 
-	var events []*OutboxEvent
+	var events []OutboxEvent
 	for rows.Next() {
-		event := &OutboxEvent{}
+		event := OutboxEvent{}
 		if err := rows.Scan(
 			&event.ID, &event.EventID, &event.EventType, &event.SessionID,
 			&event.Sequence, &event.Payload, &event.CreatedAt, &event.PublishedAt,

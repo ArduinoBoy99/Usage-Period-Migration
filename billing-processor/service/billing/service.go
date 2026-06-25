@@ -42,6 +42,13 @@ type Service interface {
 	PublishBillingProcessed(ctx context.Context, event *BillingProcessedEvent) error
 }
 
+type Repository interface {
+	BeginTx(ctx context.Context) (*sql.Tx, error)
+	ProcessedBillingEventExistsTx(ctx context.Context, tx *sql.Tx, eventID string) (bool, error)
+	InsertProcessedBillingEventTx(ctx context.Context, tx *sql.Tx, event *repo.ProcessedBillingEvent) error
+	CountProcessedBillingEvents(ctx context.Context) (int64, error)
+}
+
 // MetronomePayload represents the payload sent to Metronome
 type MetronomePayload struct {
 	TransactionID string                 `json:"transaction_id"` // session_id:sequence
@@ -62,7 +69,7 @@ type BillingProcessedEvent struct {
 }
 
 type billingService struct {
-	db             *repo.PostgresDB
+	db             Repository
 	kafkaConnector *kafkaRepo.KafkaConnector
 	consumer       *kafka.Reader
 	producer       *kafka.Writer
@@ -70,7 +77,7 @@ type billingService struct {
 }
 
 // NewService creates a new Billing Processor service
-func NewService(db *repo.PostgresDB, kafkaConnector *kafkaRepo.KafkaConnector, logger *slog.Logger) Service {
+func NewService(db Repository, kafkaConnector *kafkaRepo.KafkaConnector, logger *slog.Logger) Service {
 	return &billingService{
 		db:             db,
 		kafkaConnector: kafkaConnector,

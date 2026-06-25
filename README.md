@@ -13,7 +13,8 @@ The system consists of 5 Go services:
   - implements the transactional outbox pattern to reliably publish billing chunks to Kafka, using a distributed worker pool with leasing for concurrent processing 
 - #### Analytics Exporter 
   - consumes processed billing events and exports them to analytics platforms (with Clickhouse simulation in this implementation)
-
+- #### Migration Service 
+  - at startup sets up the database schema, creates indexes
 ![Billing System Design](https://github.com/ArduinoBoy99/Usage-Period-Migration/blob/main/Billing-SystemDesign1.png)
 
 

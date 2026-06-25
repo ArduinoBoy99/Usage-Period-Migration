@@ -50,8 +50,8 @@ type RealisticSessionConfig struct {
 	ActiveRatio      float64 // Ratio of active vs finished sessions (0.0-1.0)
 }
 
-// SessionRepository defines the interface for session repository operations
-type SessionRepository interface {
+// Repository defines the interface for session repository operations
+type Repository interface {
 	InsertUsageSession(ctx context.Context, session *repo.UsageSessions) error
 	GetUsageSessionByID(ctx context.Context, sessionID string) (*repo.UsageSessions, error)
 	BeginTx(ctx context.Context) (*sql.Tx, error)
@@ -63,11 +63,11 @@ type SessionRepository interface {
 
 // Change the service struct:
 type sessionService struct {
-	db SessionRepository // Change from *repo.PostgresDB
+	db Repository // Change from *repo.PostgresDB
 }
 
 // NewService creates a new Sessions service
-func NewService(db SessionRepository) Service {
+func NewService(db Repository) Service {
 	return &sessionService{
 		db: db,
 	}
