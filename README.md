@@ -32,3 +32,8 @@ The system uses structured JSON logging throughout for production observability.
 All services are containerized with Docker and orchestrated via docker-compose for local development. The infrastructure includes PostgreSQL 16.14 with auto-incrementing IDs, Kafka 7.6.0 with Zookeeper for reliable message queuing, and comprehensive CI/CD via CircleCI with parallel build and test jobs. Database initialization is handled through schema migration functions that create tables with appropriate indexes on critical query paths.
 
 The codebase follows clean architecture principles with interface-based repositories for testability, comprehensive table-driven unit tests, and proper error handling throughout. Dependencies are managed via Go modules, and all services compile to small Alpine-based Docker images suitable for production deployment.
+
+## Running the System
+Use the following command to build and start all services in the system:
+
+`docker-compose up --build`
